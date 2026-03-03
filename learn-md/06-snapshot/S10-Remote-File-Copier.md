@@ -140,8 +140,8 @@ classDiagram
 
 | 端 | 限流位置 | 代码位置 |
 |----|---------|---------|
-| **Follower（拉取端）** | `CopySession.sendNextRpc()` 中调用 `snapshotThrottle.throttledByThroughput()` | `CopySession.java:263` |
-| **Leader（服务端）** | `SnapshotFileReader.readFile()` 中调用 `snapshotThrottle.throttledByThroughput()` | `SnapshotFileReader.java:68` |
+| **Follower（拉取端）** | `CopySession.sendNextRpc()` 中调用 `snapshotThrottle.throttledByThroughput()` | `CopySession.java:287-295` |
+| **Leader（服务端）** | `SnapshotFileReader.readFile()` 中调用 `snapshotThrottle.throttledByThroughput()` | `SnapshotFileReader.java:77-84` |
 
 两端使用**各自独立的** `ThroughputSnapshotThrottle` 实例，互不干扰。
 
@@ -151,7 +151,7 @@ classDiagram
 
 ### 3.1 RemoteFileCopier 字段分析
 
-**源码**：`RemoteFileCopier.java:50-57`
+**源码**：`RemoteFileCopier.java:52-57`
 
 ```java
 private long             readId;           // Leader 端注册的 FileReader ID（从 URI 解析）
@@ -162,7 +162,7 @@ private Scheduler         timerManager;   // 定时器，用于重试调度
 private SnapshotThrottle  snapshotThrottle; // 限流器（可为 null）
 ```
 
-**URI 格式解析**（`RemoteFileCopier.java:65-85`）：
+**URI 格式解析**（`RemoteFileCopier.java:70-85`）：
 
 ```
 remote://192.168.1.1:8080/12345678
@@ -170,12 +170,12 @@ remote://192.168.1.1:8080/12345678
               endpoint      readId
 ```
 
-- `Snapshot.REMOTE_SNAPSHOT_URI_SCHEME` = `"remote://"`（`RemoteFileCopier.java:67`）
+- `Snapshot.REMOTE_SNAPSHOT_URI_SCHEME` = `"remote://"`（`Snapshot.java:42`）
 - `readId` 是 `FileService.addReader()` 返回的 ID，用于在 Leader 端查找对应的 `SnapshotFileReader`
 
 ### 3.2 CopySession 字段分析
 
-**源码**：`CopySession.java:57-80`（字段定义区域）
+**源码**：`CopySession.java:60-80`（字段定义区域）
 
 ```java
 private final Lock                   lock;           // 保护所有状态的互斥锁
@@ -223,7 +223,7 @@ message GetFileResponse {
 
 ### 3.4 CopyOptions 字段
 
-**源码**：`CopyOptions.java:30-32`
+**源码**：`CopyOptions.java:28-30`
 
 ```java
 private int  maxRetry        = 3;       // 最大重试次数
@@ -317,9 +317,9 @@ sequenceDiagram
 
 ### 5.1 init() — URI 解析与连接建立
 
-**源码**：`RemoteFileCopier.java:62-88`
+**源码**：`RemoteFileCopier.java:68-88`
 
-**分支穷举清单**：
+**分支穷举清单**：（源码行号已对照 `RemoteFileCopier.java` 逐行验证）
 
 | 条件 | 结果 |
 |------|------|
@@ -329,7 +329,7 @@ sequenceDiagram
 | □ 全部通过 | return true |
 
 ```java
-// RemoteFileCopier.java:62-88
+// RemoteFileCopier.java:68-88
 public boolean init(String uri, final SnapshotThrottle snapshotThrottle, final SnapshotCopierOptions opts) {
     this.rpcService = opts.getRaftClientService();
     this.timerManager = opts.getTimerManager();
@@ -396,6 +396,11 @@ final OutputStream out = new BufferedOutputStream(new FileOutputStream(file, fal
 // 3. 创建 CopySession 并立即发送第一个 RPC
 final CopySession session = newCopySession(source);
 session.setOutputStream(out);
+session.setDestPath(destPath);   // ← 设置目标路径（用于错误日志）
+session.setDestBuf(null);        // ← 明确设置 destBuf=null（写文件模式）
+if (opts != null) {
+    session.setCopyOptions(opts);  // ← 设置拷贝选项（maxRetry/timeout 等）
+}
 session.sendNextRpc();  // ← 立即开始，不等待
 return session;         // ← 返回 Session，调用方通过 join() 等待完成
 ```
@@ -451,7 +456,7 @@ void sendNextRpc() {
 }
 ```
 
-**offset 滑动窗口机制**（`CopySession.java:252-253`）：
+**offset 滑动窗口机制**（`CopySession.java:278-279`）：
 
 ```
 第1次：offset=0,  count=128KB → 读取 [0, 128KB)
@@ -471,15 +476,17 @@ void sendNextRpc() {
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
 | □ this.finished == true | 直接 return | `CopySession.java:218` |
-| □ !status.isOk() && code == ECANCELED | setError(ECANCELED) + onFinished() | `CopySession.java:223-227` |
-| □ !status.isOk() && code == EAGAIN | **不增加** retryTimes，schedule timer 重试 | `CopySession.java:230-235` |
-| □ !status.isOk() && code != EAGAIN && ++retryTimes >= maxRetry | setError + onFinished() | `CopySession.java:230-234` |
-| □ !status.isOk() && code != EAGAIN && retryTimes < maxRetry | schedule timer 重试 | `CopySession.java:235-237` |
-| □ status.isOk() && outputStream != null | response.getData().writeTo(outputStream) | `CopySession.java:244-245` |
+| □ !status.isOk() && code == ECANCELED && st.isOk() | setError(ECANCELED) + onFinished() | `CopySession.java:223-227` |
+| □ !status.isOk() && code == ECANCELED && !st.isOk() | 仅 schedule timer 重试（st 已有错误不覆盖） | `CopySession.java:235-236` |
+| □ !status.isOk() && code != EAGAIN && ++retryTimes >= maxRetry && st.isOk() | setError + onFinished() | `CopySession.java:229-233` |
+| □ !status.isOk() && code != EAGAIN && retryTimes < maxRetry | schedule timer 重试 | `CopySession.java:235-236` |
+| □ !status.isOk() && code == EAGAIN | **不增加** retryTimes，schedule timer 重试 | `CopySession.java:235-236` |
+| □ status.isOk() && response == null | Requires.requireNonNull 抛出 IllegalArgumentException | `CopySession.java:239` |
+| □ status.isOk() && outputStream != null | response.getData().writeTo(outputStream) | `CopySession.java:243-245` |
 | □ catch(IOException) 写文件失败 | setError(EIO) + onFinished() | `CopySession.java:246-250` |
-| □ status.isOk() && outputStream == null | destBuf.put(response.getData()) | `CopySession.java:251` |
-| □ status.isOk() && response.eof == true | onFinished() → finishLatch.countDown() | `CopySession.java:253-255` |
-| □ status.isOk() && response.eof == false | 更新 count=readSize，lock.unlock()，sendNextRpc() | `CopySession.java:240-241` |
+| □ status.isOk() && outputStream == null | destBuf.put(response.getData()) | `CopySession.java:252` |
+| □ status.isOk() && response.eof == true | onFinished() → finishLatch.countDown() | `CopySession.java:254-256` |
+| □ status.isOk() && response.eof == false | 更新 count=readSize，lock.unlock()，sendNextRpc() | `CopySession.java:241 + 274` |
 
 ```java
 // CopySession.java:215-274（核心逻辑）
@@ -603,13 +610,40 @@ public void cancel() {
 }
 ```
 
----
+### 6.5 close() — 资源回收
 
-## 7. FileService（Leader 端）详解
+**源码**：`CopySession.java:113-122`
+
+```java
+public void close() throws IOException {
+    this.lock.lock();
+    try {
+        if (!this.finished) {
+            Utils.closeQuietly(this.outputStream);  // ← 只在未完成时关闭（已完成则 onFinished 已关闭）
+        }
+        if (null != this.destBuf) {
+            this.destBuf.recycle();  // ← 回收到内存池（注意：不是 flip！）
+            this.destBuf = null;
+        }
+    } finally {
+        this.lock.unlock();
+    }
+}
+```
+
+⚠️ **`close()` vs `onFinished()` 的关键差异**：
+
+| 操作 | `onFinished()` | `close()` |
+|------|---------------|-----------|
+| `outputStream` | `closeQuietly()` + null | 仅在 `!finished` 时 `closeQuietly()`（避免重复关闭） |
+| `destBuf` | `flip(buf)` + null（**保留数据供读取**） | `recycle()` + null（**回收内存池**） |
+| 触发时机 | 传输完成/失败/取消时 | 外部调用（`LocalSnapshotCopier.copyFile()` 的 finally 块） |
+
+📌 **设计意图**：`onFinished()` 中 `flip(destBuf)` 是为了让调用方能读取内存中的数据（元数据文件场景）；`close()` 中 `recycle()` 是在调用方读完数据后回收内存池资源。两者不能互换。
 
 ### 7.1 FileService 的单例设计
 
-**源码**：`FileService.java:55-65`
+**源码**：`FileService.java:55-80`（单例定义 + 构造函数）
 
 ```java
 public final class FileService {
@@ -631,21 +665,21 @@ public final class FileService {
 
 ### 7.2 handleGetFile() — 处理文件读取请求
 
-**源码**：`FileService.java:72-120`
+**源码**：`FileService.java:84-132`
 
-**分支穷举清单**：
+**分支穷举清单**：（源码行号已对照 `FileService.java` 逐行验证）
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ request.getCount() <= 0 \|\| request.getOffset() < 0 | return EREQUEST 错误 | `FileService.java:73-77` |
-| □ fileReaderMap.get(readerId) == null | return ENOENT 错误 | `FileService.java:78-83` |
-| □ catch(RetryAgainException) | return EAGAIN 错误 | `FileService.java:107-111` |
-| □ catch(IOException) | return EIO 错误 | `FileService.java:112-116` |
-| □ buf.hasRemaining() == false（读到空数据） | data = ByteString.EMPTY | `FileService.java:99-101` |
-| □ 正常读取 | 返回 GetFileResponse(eof, data, readSize) | `FileService.java:102-104` |
+| □ request.getCount() <= 0 \|\| request.getOffset() < 0 | return EREQUEST 错误 | `FileService.java:85-88` |
+| □ fileReaderMap.get(readerId) == null | return ENOENT 错误 | `FileService.java:90-94` |
+| □ catch(RetryAgainException) | return EAGAIN 错误 | `FileService.java:117-121` |
+| □ catch(IOException) | return EIO 错误 | `FileService.java:122-127` |
+| □ buf.hasRemaining() == false（读到空数据） | data = ByteString.EMPTY | `FileService.java:111-113` |
+| □ 正常读取 | 返回 GetFileResponse(eof, data, readSize) | `FileService.java:114-116` |
 
 ```java
-// FileService.java:72-120
+// FileService.java:84-132
 public Message handleGetFile(final GetFileRequest request, final RpcRequestClosure done) {
     if (request.getCount() <= 0 || request.getOffset() < 0) {
         return RpcFactoryHelper.responseFactory()
@@ -688,7 +722,7 @@ public Message handleGetFile(final GetFileRequest request, final RpcRequestClosu
 
 ### 7.3 addReader / removeReader — FileReader 生命周期
 
-**源码**：`FileService.java:122-140`
+**源码**：`FileService.java:138-149`
 
 ```java
 // 注册 FileReader，返回 readerId（用于构造快照 URI）
@@ -718,7 +752,17 @@ public boolean removeReader(final long readerId) {
 
 ### 8.1 readFile() — 元数据文件 vs 数据文件
 
-**源码**：`SnapshotFileReader.java:55-94`
+**源码**：`SnapshotFileReader.java:63-94`
+
+**分支穷举清单**：（源码行号已对照 `SnapshotFileReader.java` 逐行验证）
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ fileName == JRAFT_SNAPSHOT_META_FILE | 全量读取元数据，return EOF | `SnapshotFileReader.java:65-70` |
+| □ fileMeta == null | **throw FileNotFoundException** | `SnapshotFileReader.java:72-74` |
+| □ snapshotThrottle != null && throttledByThroughput() == 0 | **throw RetryAgainException** → FileService 返回 EAGAIN | `SnapshotFileReader.java:81-83` |
+| □ snapshotThrottle != null && throttledByThroughput() > 0 | 使用限流后的 newMaxCount 继续读取 | `SnapshotFileReader.java:78-84` |
+| □ snapshotThrottle == null | 使用原始 maxCount 读取 | `SnapshotFileReader.java:86` |
 
 ```java
 @Override
@@ -801,7 +845,7 @@ protected int readFileWithMeta(final ByteBufferCollector buf, final String fileN
 
 ### 9.1 限流算法：固定窗口计数器
 
-**源码**：`ThroughputSnapshotThrottle.java:30-83`
+**源码**：`ThroughputSnapshotThrottle.java:52-80`
 
 这**不是令牌桶，也不是滑动窗口**，而是**固定窗口计数器**（Fixed Window Counter）。
 
@@ -814,12 +858,12 @@ protected int readFileWithMeta(final ByteBufferCollector buf, final String fileN
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ currThroughputBytes + bytes > limitPerCycle && 时间间隔 ≤ 1周期 | 返回剩余配额（limitPerCycle - currThroughputBytes） | `ThroughputSnapshotThrottle.java:57-60` |
-| □ currThroughputBytes + bytes > limitPerCycle && 时间间隔 > 1周期 | 进入新周期，返回 min(bytes, limitPerCycle) | `ThroughputSnapshotThrottle.java:62-66` |
-| □ currThroughputBytes + bytes ≤ limitPerCycle | 返回 bytes（全部允许） | `ThroughputSnapshotThrottle.java:68-71` |
+| □ currThroughputBytes + bytes > limitPerCycle && 时间间隔 ≤ 1周期 | 返回剩余配额（limitPerCycle - currThroughputBytes） | `ThroughputSnapshotThrottle.java:60-63` |
+| □ currThroughputBytes + bytes > limitPerCycle && 时间间隔 > 1周期 | 进入新周期，返回 min(bytes, limitPerCycle) | `ThroughputSnapshotThrottle.java:64-68` |
+| □ currThroughputBytes + bytes ≤ limitPerCycle | 返回 bytes（全部允许） | `ThroughputSnapshotThrottle.java:69-72` |
 
 ```java
-// ThroughputSnapshotThrottle.java:50-75
+// ThroughputSnapshotThrottle.java:52-80
 @Override
 public long throttledByThroughput(final long bytes) {
     long availableSize;
@@ -853,7 +897,7 @@ public long throttledByThroughput(final long bytes) {
 
 ### 9.2 时间对齐机制
 
-**源码**：`ThroughputSnapshotThrottle.java:46-48`
+**源码**：`ThroughputSnapshotThrottle.java:49-51`
 
 ```java
 private long calculateCheckTimeUs(final long currTimeUs) {
@@ -871,8 +915,8 @@ private long calculateCheckTimeUs(final long currTimeUs) {
 
 当 `throttledByThroughput()` 返回 0 时：
 
-- **Follower 端**（`CopySession.sendNextRpc():268`）：设置 `count=0`，调度 `retryIntervalMs`（默认 1s）后重试
-- **Leader 端**（`SnapshotFileReader.readFile():73`）：抛出 `RetryAgainException` → `FileService` 返回 `EAGAIN` → `CopySession.onRpcReturned()` 不增加 retryTimes，调度重试
+- **Follower 端**（`CopySession.sendNextRpc():291`）：设置 `count=0`，调度 `retryIntervalMs`（默认 1s）后重试
+- **Leader 端**（`SnapshotFileReader.readFile():81`）：抛出 `RetryAgainException` → `FileService` 返回 `EAGAIN` → `CopySession.onRpcReturned()` 不增加 retryTimes，调度重试
 
 ---
 
@@ -880,7 +924,7 @@ private long calculateCheckTimeUs(final long currTimeUs) {
 
 ### 10.1 internalCopy() — 完整拷贝流程
 
-**源码**：`LocalSnapshotCopier.java:82-100`
+**源码**：`LocalSnapshotCopier.java:88-107`
 
 ```java
 private void internalCopy() throws IOException, InterruptedException {
@@ -912,7 +956,7 @@ private void internalCopy() throws IOException, InterruptedException {
 
 ### 10.2 filterBeforeCopyRemote 优化
 
-**源码**：`LocalSnapshotCopier.java:196-260`
+**源码**：`LocalSnapshotCopier.java:196-262`
 
 当 `filterBeforeCopyRemote=true` 时，在拷贝前先对比本地已有快照和远端快照的 checksum：
 - **checksum 相同**：直接硬链接（`Files.createLink()`），无需网络传输
@@ -976,7 +1020,7 @@ private void internalCopy() throws IOException, InterruptedException {
 
 ### Q5：readId 的初始值为什么要基于进程 ID 和时间戳？
 
-**答**（`FileService.java:60-63`）：防止节点重启后 readerId 从 0 重新开始，导致 Follower 用旧的 readerId 访问新注册的 FileReader（可能读到错误的文件）。基于进程 ID + 纳秒时间戳的混合值，使得每次重启后的初始 readerId 都不同。
+**答**（`FileService.java:75-80`）：防止节点重启后 readerId 从 0 重新开始，导致 Follower 用旧的 readerId 访问新注册的 FileReader（可能读到错误的文件）。基于进程 ID + 纳秒时间戳的混合値，使得每次重启后的初始 readerId 都不同。
 
 ---
 
