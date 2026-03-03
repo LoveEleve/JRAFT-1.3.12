@@ -145,12 +145,12 @@ public interface Timeout {
 
 ### 3.3 HashedWheelBucket 字段分析
 
-**源码**：`HashedWheelTimer.java:460-470`
+**源码**：`HashedWheelTimer.java:636-639`
 
 ```java
 private static final class HashedWheelBucket {
-    private HashedWheelTimeout head;  // 链表头
-    private HashedWheelTimeout tail;  // 链表尾
+    private HashedWheelTimeout head;  // 链表头（HashedWheelTimer.java:638）
+    private HashedWheelTimeout tail;  // 链表尾（HashedWheelTimer.java:639）
 }
 ```
 
@@ -162,17 +162,17 @@ private static final class HashedWheelBucket {
 
 ### 3.4 HashedWheelTimeout 字段分析
 
-**源码**：`HashedWheelTimer.java:445-465`
+**源码**：`HashedWheelTimer.java:530-565`
 
 | 字段 | 类型 | 作用 | 源码行 |
 |------|------|------|--------|
-| `timer` | `HashedWheelTimer` | 所属定时器（用于取消时访问 cancelledTimeouts） | `HashedWheelTimer.java:449` |
-| `task` | `TimerTask` | 任务体 | `HashedWheelTimer.java:450` |
-| `deadline` | `long` | 到期时间（相对于 startTime 的纳秒偏移） | `HashedWheelTimer.java:451` |
-| `state` | `volatile int` | 状态：0=INIT, 1=CANCELLED, 2=EXPIRED | `HashedWheelTimer.java:454` |
-| `remainingRounds` | `long` | 剩余圈数（多圈时间轮的关键字段） | `HashedWheelTimer.java:458` |
-| `next` / `prev` | `HashedWheelTimeout` | 双向链表指针 | `HashedWheelTimer.java:461-462` |
-| `bucket` | `HashedWheelBucket` | 所在的 Bucket（用于 remove 时直接操作） | `HashedWheelTimer.java:465` |
+| `timer` | `HashedWheelTimer` | 所属定时器（用于取消时访问 cancelledTimeouts） | `HashedWheelTimer.java:538` |
+| `task` | `TimerTask` | 任务体 | `HashedWheelTimer.java:539` |
+| `deadline` | `long` | 到期时间（相对于 startTime 的纳秒偏移） | `HashedWheelTimer.java:540` |
+| `state` | `volatile int` | 状态：0=INIT, 1=CANCELLED, 2=EXPIRED | `HashedWheelTimer.java:543` |
+| `remainingRounds` | `long` | 剩余圈数（多圈时间轮的关键字段） | `HashedWheelTimer.java:548` |
+| `next` / `prev` | `HashedWheelTimeout` | 双向链表指针 | `HashedWheelTimer.java:552-553` |
+| `bucket` | `HashedWheelBucket` | 所在的 Bucket（用于 remove 时直接操作） | `HashedWheelTimer.java:555` |
 
 📌 **`remainingRounds` 是多圈时间轮的核心字段**：当任务的延迟时间超过一圈（`ticksPerWheel * tickDuration`），任务会被放入对应槽，但 `remainingRounds > 0`，每次 Worker 经过该槽时减 1，直到 `remainingRounds == 0` 才真正触发。
 
@@ -217,13 +217,10 @@ sequenceDiagram
 
     Note over W: 每 tickDuration 推进一次
     W->>W: waitForNextTick()（sleep 到下一个 tick）
-    W->>W: processCancelledTasks()
-    W->>Q: transferTimeoutsToBuckets()（最多 100000 个）
-    W->>W: calculated = deadline / tickDuration
-    W->>W: remainingRounds = (calculated - tick) / wheel.length
-    W->>W: stopIndex = ticks & mask
-    W->>B: bucket.addTimeout(timeout)
+    W->>W: processCancelledTasks()（先清理已取消任务）
+    W->>W: transferTimeoutsToBuckets()（内部：calculated/remainingRounds/stopIndex/addTimeout，最多 100000 个）
     W->>B: expireTimeouts(deadline)
+    W->>W: tick++
     
     alt remainingRounds <= 0
         B->>B: timeout.expire()
@@ -964,7 +961,7 @@ public void destroy() {
 }
 ```
 
-⚠️ **`destroy()` 的延迟销毁机制**：如果 `invoking == true`（正在执行 `onTrigger()`），`destroy()` 不会立即调用 `onDestroy()`，而是设置 `destroyed = true`，等 `run()` 执行完后检测到 `destroyed` 标志，再调用 `onDestroy()`。这避免了在 `onTrigger()` 执行期间销毁定时器导致的并发问题。
+⚠️ **`destroy()` 的延迟销毁机制**：如果 `invoking == true`（正在执行 `onTrigger()`），此时 `running` 仍然是 `true`（因为 `running=false` 是在 `invoking=false` 之后才执行的，见 `run()` 第94-96行）。所以 `destroy()` 中的 `if (!this.running)` 为 **false**，`invokeDestroyed` 不会被设为 `true`，`onDestroy()` 不会立即调用。等 `run()` 执行完后，检测到 `stopped==true`（`destroy()` 已设置），将 `invokeDestroyed = this.destroyed`（即 `true`），再调用 `onDestroy()`。这避免了在 `onTrigger()` 执行期间销毁定时器导致的并发问题。
 
 ⚠️ **`destroy()` 中 `return` 不会跳过 `finally` 块**：`try` 块内的两处 `return`（`if (destroyed) return` 和 `if (stopped) return`）只是跳出 `try` 块，`finally` 块中的 `lock.unlock()`、`timer.stop()`、`onDestroy()` **仍然会执行**。这意味着：即使 `stopped == true` 提前 return，`timer.stop()` 也会被调用（引用计数 -1）。
 
@@ -1011,10 +1008,11 @@ public void runOnceNow() {
 | □ finally { lock.unlock() } | 释放锁 | `RepeatedTimer.java:205-207` |
 
 ```java
-// RepeatedTimer.java:195-210（reset）
+// RepeatedTimer.java:195-210（reset 有参版本）
 public void reset(final int timeoutMs) {
     this.lock.lock();
-    this.timeoutMs = timeoutMs;  // ← 先更新 timeoutMs（在锁内更新，但 volatile 保证可见性）
+    this.timeoutMs = timeoutMs;  // ← 在 lock() 之后、try 之前更新（在锁内，保证原子性）
+    // ⚠️ timeoutMs 是 volatile，即使在锁外读取（如 adjustTimeout() 中）也能看到最新值
     try {
         if (this.stopped) {
             return;  // ← 已停止，不重新调度
@@ -1022,7 +1020,8 @@ public void reset(final int timeoutMs) {
         if (this.running) {
             schedule();  // ← 重新调度，使用新的 timeoutMs
         }
-        // running == false：任务正在执行中，等 run() 完成后自然使用新的 timeoutMs
+        // running == false：说明 invoking==true（任务正在执行中），
+        // run() 执行完后会调用 schedule()，自然使用新的 timeoutMs
     } finally {
         this.lock.unlock();
     }
@@ -1032,6 +1031,32 @@ public void reset(final int timeoutMs) {
 📌 **`reset()` vs `restart()` 的差异**：
 - `reset(timeoutMs)`：更新超时时间，如果 running 则重新调度；不改变 stopped 状态
 - `restart()`：强制重新调度，不更新超时时间；会将 stopped 设为 false
+
+### 5.12 reset()（无参版本）逐行分析
+
+**源码**：`RepeatedTimer.java:212-218`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ 正常路径 | 在锁内调用 reset(this.timeoutMs)（使用当前 timeoutMs 重新调度） | `RepeatedTimer.java:214` |
+| □ finally { lock.unlock() } | 释放锁 | `RepeatedTimer.java:215-217` |
+
+```java
+// RepeatedTimer.java:212-218（reset 无参版本）
+public void reset() {
+    this.lock.lock();
+    try {
+        reset(this.timeoutMs);  // ← 在锁内调用 reset(int)，reset(int) 内部也会 lock()
+        // ⚠️ 由于是 ReentrantLock（可重入锁），同一线程多次加锁不会死锁
+    } finally {
+        this.lock.unlock();
+    }
+}
+```
+
+⚠️ **`reset()` 无参版本的锁嵌套**：`reset()` 在锁内调用 `reset(int)`，而 `reset(int)` 内部也会 `this.lock.lock()`。由于使用的是 `ReentrantLock`（可重入锁），同一线程可以多次获取锁，不会死锁。`reset()` 无参版本的实际效果等同于 `reset(this.timeoutMs)`，即用当前超时时间重新调度（不改变超时时间，只是强制重新调度）。
 
 ---
 
@@ -1181,6 +1206,32 @@ private static abstract class Shared<T> {
     }
 }
 ```
+
+**`SharedRef.getRef()` 的线程安全保证**：
+
+```java
+// DefaultRaftTimerFactory.java:155-162（SharedRef.getRef()）
+public synchronized T getRef() {  // ← synchronized 方法！保证懒创建的线程安全
+    if (this.shared == null || this.shared.isShutdown()) {
+        this.shared = create(this.workerNum, this.name);  // ← 懒创建：首次调用或 shutdown 后重建
+    }
+    return this.shared.getRef();  // ← 引用计数 +1
+}
+```
+
+**分支穷举清单（SharedRef.getRef()）**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ shared == null 或 shared.isShutdown() | create() 重建 Shared 实例 | `DefaultRaftTimerFactory.java:157-159` |
+| □ shared 正常 | shared.getRef()（引用计数 +1） | `DefaultRaftTimerFactory.java:161` |
+
+**`SharedTimer.stop()` 的分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ mayShutdown() 返回 true（引用计数降到 0） | this.shared.stop()（真正关闭底层 DefaultTimer） | `DefaultRaftTimerFactory.java:197-199` |
+| □ mayShutdown() 返回 false（还有其他引用） | return emptySet（不真正关闭） | `DefaultRaftTimerFactory.java:200-201` |
 
 **引用计数的作用**：多个 Raft Group 共享同一个 `DefaultTimer` 实例。每个 Group 调用 `getRef()` 时引用计数 +1，调用 `stop()` 时引用计数 -1。只有当所有 Group 都 stop 后（引用计数降到 0），底层的 `DefaultTimer` 才真正 shutdown。
 
