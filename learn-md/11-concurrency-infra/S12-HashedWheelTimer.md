@@ -122,12 +122,12 @@ public interface Timeout {
 
 ### 3.2 HashedWheelTimer 字段分析
 
-**源码**：`HashedWheelTimer.java:52-82`
+**源码**：`HashedWheelTimer.java:63-81`
 
 | 字段 | 类型 | 作用 | 源码行 |
-|------|------|------|--------|
-| `worker` | `Worker` | 后台 Worker 线程的 Runnable | `HashedWheelTimer.java:62` |
-| `workerThread` | `Thread` | Worker 线程实例 | `HashedWheelTimer.java:63` |
+|------|------|------|-----|
+| `worker` | `Worker` | 后台 Worker 线程的 Runnable | `HashedWheelTimer.java:63` |
+| `workerThread` | `Thread` | Worker 线程实例 | `HashedWheelTimer.java:64` |
 | `workerState` | `volatile int` | 状态机：0=INIT, 1=STARTED, 2=SHUTDOWN | `HashedWheelTimer.java:70` |
 | `tickDuration` | `long` | 每个 tick 的纳秒数（默认 100ms） | `HashedWheelTimer.java:72` |
 | `wheel` | `HashedWheelBucket[]` | 时间槽数组，长度必须是 2 的幂 | `HashedWheelTimer.java:73` |
@@ -235,20 +235,20 @@ sequenceDiagram
 
 ### 4.3 newTimeout() 逐行分析
 
-**源码**：`HashedWheelTimer.java:292-318`
+**源码**：`HashedWheelTimer.java:330-360`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ task == null | throw NullPointerException | `HashedWheelTimer.java:294` |
-| □ unit == null | throw NullPointerException | `HashedWheelTimer.java:297` |
-| □ maxPendingTimeouts > 0 && count > max | decrementAndGet + throw RejectedExecutionException | `HashedWheelTimer.java:302-306` |
-| □ delay > 0 && deadline < 0（溢出） | deadline = Long.MAX_VALUE | `HashedWheelTimer.java:314-316` |
-| □ 正常路径 | 创建 HashedWheelTimeout + timeouts.add() | `HashedWheelTimer.java:317-318` |
+|------|------|-----|
+| □ task == null | throw NullPointerException | `HashedWheelTimer.java:331` |
+| □ unit == null | throw NullPointerException | `HashedWheelTimer.java:334` |
+| □ maxPendingTimeouts > 0 && count > max | decrementAndGet + throw RejectedExecutionException | `HashedWheelTimer.java:339-343` |
+| □ delay > 0 && deadline < 0（溢出） | deadline = Long.MAX_VALUE | `HashedWheelTimer.java:352-354` |
+| □ 正常路径 | 创建 HashedWheelTimeout + timeouts.add() | `HashedWheelTimer.java:355-357` |
 
 ```java
-// HashedWheelTimer.java:292-318
+// HashedWheelTimer.java:330-360
 public Timeout newTimeout(TimerTask task, long delay, TimeUnit unit) {
     // 1. 参数校验
     if (task == null) throw new NullPointerException("task");
@@ -283,21 +283,21 @@ public Timeout newTimeout(TimerTask task, long delay, TimeUnit unit) {
 
 ### 4.4 start() 逐行分析
 
-**源码**：`HashedWheelTimer.java:237-256`
+**源码**：`HashedWheelTimer.java:268-292`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ workerState == WORKER_STATE_INIT → CAS 成功 | workerThread.start() | `HashedWheelTimer.java:241-243` |
-| □ workerState == WORKER_STATE_INIT → CAS 失败 | 另一个线程已启动，不做任何事 | `HashedWheelTimer.java:241` |
-| □ workerState == WORKER_STATE_STARTED | break（幂等） | `HashedWheelTimer.java:244` |
-| □ workerState == WORKER_STATE_SHUTDOWN | throw IllegalStateException | `HashedWheelTimer.java:246` |
-| □ default | throw Error | `HashedWheelTimer.java:248` |
-| □ while(startTime == 0) → catch(InterruptedException) | ignore（继续等待） | `HashedWheelTimer.java:253-255` |
+|------|------|-----|
+| □ workerState == WORKER_STATE_INIT → CAS 成功 | workerThread.start() | `HashedWheelTimer.java:270-272` |
+| □ workerState == WORKER_STATE_INIT → CAS 失败 | 另一个线程已启动，不做任何事 | `HashedWheelTimer.java:270` |
+| □ workerState == WORKER_STATE_STARTED | break（幂等） | `HashedWheelTimer.java:274` |
+| □ workerState == WORKER_STATE_SHUTDOWN | throw IllegalStateException | `HashedWheelTimer.java:276` |
+| □ default | throw Error | `HashedWheelTimer.java:278` |
+| □ while(startTime == 0) → catch(InterruptedException) | ignore（继续等待） | `HashedWheelTimer.java:284-286` |
 
 ```java
-// HashedWheelTimer.java:237-256
+// HashedWheelTimer.java:268-292
 public void start() {
     switch (workerStateUpdater.get(this)) {
         case WORKER_STATE_INIT:
@@ -325,20 +325,20 @@ public void start() {
 
 ### 4.5 Worker.run() 逐行分析
 
-**源码**：`HashedWheelTimer.java:330-370`
+**源码**：`HashedWheelTimer.java:381-418`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ startTime == 0 | startTime = 1（防止 0 被误判为未初始化） | `HashedWheelTimer.java:332-334` |
-| □ startTimeInitialized.countDown() | 通知 start() 等待的线程 | `HashedWheelTimer.java:337` |
-| □ do-while: deadline > 0 | processCancelledTasks + transferTimeoutsToBuckets + expireTimeouts + tick++ | `HashedWheelTimer.java:339-347` |
-| □ do-while: deadline <= 0（Long.MIN_VALUE） | 跳过本次 tick（收到 shutdown 信号） | `HashedWheelTimer.java:339` |
-| □ while 退出后 | 遍历所有 bucket.clearTimeouts + 遍历 timeouts 队列 + processCancelledTasks | `HashedWheelTimer.java:350-368` |
+|------|------|-----|
+| □ startTime == 0 | startTime = 1（防止 0 被误判为未初始化） | `HashedWheelTimer.java:383-385` |
+| □ startTimeInitialized.countDown() | 通知 start() 等待的线程 | `HashedWheelTimer.java:388` |
+| □ do-while: deadline > 0 | processCancelledTasks + transferTimeoutsToBuckets + expireTimeouts + tick++ | `HashedWheelTimer.java:390-398` |
+| □ do-while: deadline <= 0（Long.MIN_VALUE） | 跳过本次 tick（if 块不执行），随后检查 while 条件，若 workerState==SHUTDOWN 则退出循环 | `HashedWheelTimer.java:390` |
+| □ while 退出后 | 遍历所有 bucket.clearTimeouts + 遍历 timeouts 队列 + processCancelledTasks | `HashedWheelTimer.java:401-416` |
 
 ```java
-// HashedWheelTimer.java:330-370（Worker.run()）
+// HashedWheelTimer.java:381-418（Worker.run()）
 public void run() {
     // 1. 初始化 startTime
     startTime = System.nanoTime();
@@ -375,20 +375,20 @@ public void run() {
 
 ### 4.6 transferTimeoutsToBuckets() 逐行分析
 
-**源码**：`HashedWheelTimer.java:372-397`
+**源码**：`HashedWheelTimer.java:420-447`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ 循环最多 100000 次 | 防止 Worker 线程被饥饿 | `HashedWheelTimer.java:374` |
-| □ timeout == null | break（队列已空） | `HashedWheelTimer.java:376-378` |
-| □ timeout.state() == ST_CANCELLED | continue（跳过已取消的） | `HashedWheelTimer.java:379-381` |
-| □ ticks = Math.max(calculated, tick) | 防止调度到过去的 tick（任务已过期） | `HashedWheelTimer.java:388` |
-| □ 正常路径 | 计算 stopIndex + bucket.addTimeout(timeout) | `HashedWheelTimer.java:389-392` |
+|------|------|-----|
+| □ 循环最多 100000 次 | 防止 Worker 线程被饥饿 | `HashedWheelTimer.java:422` |
+| □ timeout == null | break（队列已空） | `HashedWheelTimer.java:424-426` |
+| □ timeout.state() == ST_CANCELLED | continue（跳过已取消的） | `HashedWheelTimer.java:427-429` |
+| □ ticks = Math.max(calculated, tick) | 防止调度到过去的 tick（任务已过期） | `HashedWheelTimer.java:434` |
+| □ 正常路径 | 计算 stopIndex + bucket.addTimeout(timeout) | `HashedWheelTimer.java:435-438` |
 
 ```java
-// HashedWheelTimer.java:372-397（transferTimeoutsToBuckets）
+// HashedWheelTimer.java:420-447（transferTimeoutsToBuckets）
 private void transferTimeoutsToBuckets() {
     for (int i = 0; i < 100000; i++) {  // ← 每次最多处理 100000 个，防止饥饿
         HashedWheelTimeout timeout = timeouts.poll();
@@ -418,20 +418,20 @@ Worker 线程每次经过第 4 个槽时，`remainingRounds--`，直到 `remaini
 
 ### 4.7 waitForNextTick() 逐行分析
 
-**源码**：`HashedWheelTimer.java:399-440`
+**源码**：`HashedWheelTimer.java:469-519`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ sleepTimeMs <= 0 → currentTime == Long.MIN_VALUE | return -Long.MAX_VALUE（溢出保护） | `HashedWheelTimer.java:409-411` |
-| □ sleepTimeMs <= 0 → currentTime != Long.MIN_VALUE | return currentTime（到达 deadline） | `HashedWheelTimer.java:412-414` |
-| □ sleepTimeMs > 0 | Thread.sleep(sleepTimeMs) | `HashedWheelTimer.java:430` |
-| □ catch(InterruptedException) → workerState == SHUTDOWN | return Long.MIN_VALUE（shutdown 信号） | `HashedWheelTimer.java:432-434` |
-| □ catch(InterruptedException) → workerState != SHUTDOWN | continue（忽略中断，继续等待） | `HashedWheelTimer.java:432-434` |
+|------|------|-----|
+| □ sleepTimeMs <= 0 → currentTime == Long.MIN_VALUE | return -Long.MAX_VALUE（溢出保护） | `HashedWheelTimer.java:475-477` |
+| □ sleepTimeMs <= 0 → currentTime != Long.MIN_VALUE | return currentTime（到达 deadline） | `HashedWheelTimer.java:478-480` |
+| □ sleepTimeMs > 0 | Thread.sleep(sleepTimeMs) | `HashedWheelTimer.java:514` |
+| □ catch(InterruptedException) → workerState == SHUTDOWN | return Long.MIN_VALUE（shutdown 信号） | `HashedWheelTimer.java:516-518` |
+| □ catch(InterruptedException) → workerState != SHUTDOWN | continue（忽略中断，继续等待） | `HashedWheelTimer.java:516-518` |
 
 ```java
-// HashedWheelTimer.java:399-440（waitForNextTick）
+// HashedWheelTimer.java:469-519（waitForNextTick）
 private long waitForNextTick() {
     long deadline = tickDuration * (tick + 1);  // ← 下一个 tick 的 deadline（纳秒）
 
@@ -462,19 +462,19 @@ private long waitForNextTick() {
 
 ### 4.8 expireTimeouts() 逐行分析
 
-**源码**：`HashedWheelTimer.java:490-515`
+**源码**：`HashedWheelTimer.java:672-700`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ remainingRounds <= 0 → deadline <= deadline | timeout.expire()（正常触发） | `HashedWheelTimer.java:496-498` |
-| □ remainingRounds <= 0 → deadline > deadline | throw IllegalStateException（不应发生） | `HashedWheelTimer.java:499-502` |
-| □ isCancelled() | remove(timeout)（跳过已取消的） | `HashedWheelTimer.java:503-505` |
-| □ remainingRounds > 0 | remainingRounds--（还没到时间，减少圈数） | `HashedWheelTimer.java:506-508` |
+|------|------|-----|
+| □ remainingRounds <= 0 → deadline <= deadline | timeout.expire()（正常触发） | `HashedWheelTimer.java:676-678` |
+| □ remainingRounds <= 0 → deadline > deadline | throw IllegalStateException（不应发生） | `HashedWheelTimer.java:679-682` |
+| □ isCancelled() | remove(timeout)（跳过已取消的） | `HashedWheelTimer.java:683-685` |
+| □ remainingRounds > 0 | remainingRounds--（还没到时间，减少圈数） | `HashedWheelTimer.java:686-688` |
 
 ```java
-// HashedWheelTimer.java:490-515（expireTimeouts）
+// HashedWheelTimer.java:672-700（expireTimeouts）
 public void expireTimeouts(long deadline) {
     HashedWheelTimeout timeout = head;
     while (timeout != null) {
@@ -497,20 +497,98 @@ public void expireTimeouts(long deadline) {
 }
 ```
 
-### 4.9 HashedWheelTimeout.expire() 逐行分析
+### 4.9 HashedWheelTimeout.cancel() 逐行分析
 
-**源码**：`HashedWheelTimer.java:600-610`
+**源码**：`HashedWheelTimer.java:568-578`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ CAS(ST_INIT → ST_EXPIRED) 失败 | return（已取消，不执行） | `HashedWheelTimer.java:601-603` |
-| □ CAS 成功 → task.run(this) 正常 | 任务执行完成 | `HashedWheelTimer.java:605` |
-| □ catch(Throwable t) | LOG.warn（吞掉异常，不影响 Worker 线程） | `HashedWheelTimer.java:606-609` |
+|------|------|-----|
+| □ CAS(ST_INIT → ST_CANCELLED) 失败 | return false（已过期或已取消） | `HashedWheelTimer.java:570-572` |
+| □ CAS 成功 | timer.cancelledTimeouts.add(this) + return true | `HashedWheelTimer.java:574-577` |
 
 ```java
-// HashedWheelTimer.java:600-610（expire）
+// HashedWheelTimer.java:568-578（cancel）
+public boolean cancel() {
+    if (!compareAndSetState(ST_INIT, ST_CANCELLED)) {
+        return false;  // ← 已过期（ST_EXPIRED）或已取消（ST_CANCELLED）
+    }
+    // 加入取消队列，由 Worker 线程在下一个 tick 的 processCancelledTasks() 中清理
+    timer.cancelledTimeouts.add(this);
+    return true;
+}
+```
+
+⚠️ **cancel() 的延迟清理设计**：`cancel()` 只做两件事：CAS 状态 + 加入取消队列。真正从 bucket 链表中移除是由 Worker 线程在下一个 tick 的 `processCancelledTasks()` 中完成的。这样设计避免了多线程并发修改链表的问题（链表操作只在 Worker 单线程中进行）。
+
+### 4.10 HashedWheelTimeout.remove() 逐行分析
+
+**源码**：`HashedWheelTimer.java:580-590`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ bucket != null | bucket.remove(this)（从链表中移除） | `HashedWheelTimer.java:582-584` |
+| □ bucket == null（还未分配到 bucket） | timer.pendingTimeouts.decrementAndGet() | `HashedWheelTimer.java:585-587` |
+
+```java
+// HashedWheelTimer.java:580-590（remove）
+void remove() {
+    HashedWheelBucket bucket = this.bucket;
+    if (bucket != null) {
+        bucket.remove(this);  // ← 从 bucket 链表中移除（在 Worker 线程中调用，线程安全）
+    } else {
+        timer.pendingTimeouts.decrementAndGet();  // ← 还在 timeouts 队列中，直接减计数
+    }
+}
+```
+
+### 4.11 processCancelledTasks() 逐行分析
+
+**源码**：`HashedWheelTimer.java:449-462`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ timeout == null | break（队列已空） | `HashedWheelTimer.java:452-454` |
+| □ timeout.remove() 正常 | 从 bucket 链表中移除 | `HashedWheelTimer.java:456` |
+| □ catch(Throwable t) | LOG.warn（吞掉异常，不影响 Worker 线程） | `HashedWheelTimer.java:457-460` |
+
+```java
+// HashedWheelTimer.java:449-462（processCancelledTasks）
+private void processCancelledTasks() {
+    for (;;) {
+        HashedWheelTimeout timeout = cancelledTimeouts.poll();
+        if (timeout == null) break;  // ← 队列已空
+        try {
+            timeout.remove();  // ← 从 bucket 链表中移除（或减少 pendingTimeouts 计数）
+        } catch (Throwable t) {
+            if (LOG.isWarnEnabled()) {
+                LOG.warn("An exception was thrown while process a cancellation task", t);
+            }
+            // ← ⚠️ 异常被吞掉！不影响 Worker 线程继续处理其他取消任务
+        }
+    }
+}
+```
+
+### 4.12 HashedWheelTimeout.expire() 逐行分析
+
+**源码**：`HashedWheelTimer.java:607-618`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ CAS(ST_INIT → ST_EXPIRED) 失败 | return（已取消，不执行） | `HashedWheelTimer.java:608-610` |
+| □ CAS 成功 → task.run(this) 正常 | 任务执行完成 | `HashedWheelTimer.java:613` |
+| □ catch(Throwable t) | LOG.warn（吞掉异常，不影响 Worker 线程） | `HashedWheelTimer.java:614-617` |
+
+```java
+// HashedWheelTimer.java:607-618（expire）
 public void expire() {
     if (!compareAndSetState(ST_INIT, ST_EXPIRED)) {
         return;  // ← 已取消（ST_CANCELLED），不执行
@@ -528,21 +606,70 @@ public void expire() {
 
 ⚠️ **重要设计**：`expire()` 中的异常被**完全吞掉**（只打 warn 日志）。这是有意为之——如果任务抛出异常导致 Worker 线程崩溃，整个定时器就失效了。代价是：任务执行失败时调用方无法感知（除非自己在 `run()` 中处理异常）。
 
-### 4.10 stop() 逐行分析
+### 4.13 stop() 逐行分析
 
-**源码**：`HashedWheelTimer.java:258-290`
+**源码**：`HashedWheelTimer.java:294-328`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ Thread.currentThread() == workerThread | throw IllegalStateException（防止死锁） | `HashedWheelTimer.java:259-261` |
-| □ CAS(STARTED → SHUTDOWN) 失败 → getAndSet != SHUTDOWN | instanceCounter.decrementAndGet() | `HashedWheelTimer.java:264-266` |
-| □ CAS(STARTED → SHUTDOWN) 失败 → getAndSet == SHUTDOWN | 已经 shutdown，return emptySet | `HashedWheelTimer.java:264-268` |
-| □ CAS(STARTED → SHUTDOWN) 成功 → while(isAlive) | workerThread.interrupt() + join(100) | `HashedWheelTimer.java:273-280` |
-| □ catch(InterruptedException) | interrupted = true | `HashedWheelTimer.java:278-280` |
-| □ if(interrupted) | Thread.currentThread().interrupt()（恢复中断标志） | `HashedWheelTimer.java:283-285` |
-| □ finally | instanceCounter.decrementAndGet() | `HashedWheelTimer.java:286-288` |
+|------|------|-----|
+| □ Thread.currentThread() == workerThread | throw IllegalStateException（防止死锁） | `HashedWheelTimer.java:295-297` |
+| □ CAS(STARTED → SHUTDOWN) 失败 → getAndSet != SHUTDOWN | instanceCounter.decrementAndGet() | `HashedWheelTimer.java:300-302` |
+| □ CAS(STARTED → SHUTDOWN) 失败 → getAndSet == SHUTDOWN | 已经 shutdown，return emptySet | `HashedWheelTimer.java:300-305` |
+| □ CAS(STARTED → SHUTDOWN) 成功 → while(isAlive) | workerThread.interrupt() + join(100) | `HashedWheelTimer.java:310-317` |
+| □ catch(InterruptedException) | interrupted = true | `HashedWheelTimer.java:315-317` |
+| □ if(interrupted) | Thread.currentThread().interrupt()（恢复中断标志） | `HashedWheelTimer.java:320-322` |
+| □ finally | instanceCounter.decrementAndGet() | `HashedWheelTimer.java:323-325` |
+
+### 4.14 HashedWheelBucket.remove() 逐行分析
+
+**源码**：`HashedWheelTimer.java:693-720`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ timeout.prev != null | prev.next = next | `HashedWheelTimer.java:696` |
+| □ timeout.next != null | next.prev = timeout.prev | `HashedWheelTimer.java:699` |
+| □ timeout == head && timeout == tail | head=null; tail=null（链表只有一个节点） | `HashedWheelTimer.java:702-704` |
+| □ timeout == head && timeout != tail | head = next（删除的是头节点） | `HashedWheelTimer.java:705-707` |
+| □ timeout == tail（且不是 head） | tail = timeout.prev（删除的是尾节点） | `HashedWheelTimer.java:708-710` |
+| □ 清空引用 | prev=null; next=null; bucket=null（帮助 GC） | `HashedWheelTimer.java:712-714` |
+| □ 减少计数 | timer.pendingTimeouts.decrementAndGet() | `HashedWheelTimer.java:715` |
+
+```java
+// HashedWheelTimer.java:693-720（HashedWheelBucket.remove）
+public HashedWheelTimeout remove(HashedWheelTimeout timeout) {
+    HashedWheelTimeout next = timeout.next;
+    if (timeout.prev != null) {
+        timeout.prev.next = next;
+    }
+    if (timeout.next != null) {
+        timeout.next.prev = timeout.prev;
+    }
+    if (timeout == head) {
+        if (timeout == tail) {
+            tail = null;
+            head = null;  // ← 链表只有一个节点
+        } else {
+            head = next;  // ← 删除的是头节点
+        }
+    } else if (timeout == tail) {
+        tail = timeout.prev;  // ← 删除的是尾节点
+    }
+    // 清空引用，帮助 GC
+    timeout.prev = null;
+    timeout.next = null;
+    timeout.bucket = null;
+    timeout.timer.pendingTimeouts.decrementAndGet();
+    return next;
+}
+```
+
+⚠️ **为什么 `remove()` 是线程安全的？**
+
+`remove()` 只在 Worker 线程中调用（通过 `processCancelledTasks()` → `timeout.remove()` → `bucket.remove(this)`），而 `addTimeout()` 也只在 Worker 线程中调用（通过 `transferTimeoutsToBuckets()`）。因此链表操作是**单线程**的，不需要额外的同步。
 
 ---
 
@@ -556,10 +683,10 @@ public void expire() {
 
 ### 5.2 RepeatedTimer 字段分析
 
-**源码**：`RepeatedTimer.java:40-55`
+**源码**：`RepeatedTimer.java:42-50`
 
 | 字段 | 类型 | 作用 | 源码行 |
-|------|------|------|--------|
+|------|------|------|-----|
 | `lock` | `ReentrantLock` | 保护 stopped/running/destroyed 状态 | `RepeatedTimer.java:42` |
 | `timer` | `Timer` | 底层定时器（HashedWheelTimer） | `RepeatedTimer.java:43` |
 | `timeout` | `Timeout` | 当前调度的任务句柄 | `RepeatedTimer.java:44` |
@@ -588,20 +715,21 @@ stateDiagram-v2
 
 ### 5.4 run() 逐行分析
 
-**源码**：`RepeatedTimer.java:82-100`
+**源码**：`RepeatedTimer.java:83-107`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ onTrigger() 正常执行 | 触发业务逻辑 | `RepeatedTimer.java:84` |
-| □ catch(Throwable t) | LOG.error（吞掉异常，不影响重复调度） | `RepeatedTimer.java:85-87` |
-| □ this.stopped == true | running = false; invokeDestroyed = this.destroyed | `RepeatedTimer.java:91-94` |
-| □ this.stopped == false | timeout = null; schedule()（重新调度） | `RepeatedTimer.java:95-97` |
-| □ invokeDestroyed == true | onDestroy() | `RepeatedTimer.java:100` |
+|------|------|-----|
+| □ onTrigger() 正常执行 | 触发业务逻辑 | `RepeatedTimer.java:85` |
+| □ catch(Throwable t) | LOG.error（吞掉异常，不影响重复调度） | `RepeatedTimer.java:86-88` |
+| □ this.stopped == true | running = false; invokeDestroyed = this.destroyed | `RepeatedTimer.java:94-97` |
+| □ this.stopped == false | timeout = null; schedule()（重新调度） | `RepeatedTimer.java:98-100` |
+| □ finally { this.lock.unlock() } | 释放锁 | `RepeatedTimer.java:101-103` |
+| □ invokeDestroyed == true | onDestroy() | `RepeatedTimer.java:105-107` |
 
 ```java
-// RepeatedTimer.java:82-100（run）
+// RepeatedTimer.java:83-107（run）
 public void run() {
     this.invoking = true;
     try {
@@ -618,7 +746,7 @@ public void run() {
             invokeDestroyed = this.destroyed;  // ← 如果 destroy() 在 invoking 期间被调用，延迟执行
         } else {
             this.timeout = null;
-            schedule();  // ← 重新调度（实现"重复"语义）
+            schedule();  // ← 重新调度（实现“重复”语义）
         }
     } finally {
         this.lock.unlock();
@@ -631,30 +759,183 @@ public void run() {
 
 ### 5.5 start() 逐行分析
 
-**源码**：`RepeatedTimer.java:120-135`
+**源码**：`RepeatedTimer.java:134-155`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ this.destroyed == true | return（已销毁，幂等） | `RepeatedTimer.java:122-124` |
-| □ !this.stopped == true（已在运行） | return（幂等） | `RepeatedTimer.java:125-127` |
-| □ this.running == true | return（正在运行中，幂等） | `RepeatedTimer.java:128-130` |
-| □ 正常路径 | stopped=false; running=true; schedule() | `RepeatedTimer.java:131-133` |
+|------|------|-----|
+| □ this.destroyed == true | return（已销毁，幂等） | `RepeatedTimer.java:136-138` |
+| □ !this.stopped == true（已在运行） | return（幂等） | `RepeatedTimer.java:139-141` |
+| □ this.running == true | return（正在运行中，幂等） | `RepeatedTimer.java:143-145` |
+| □ 正常路径 | stopped=false; running=true; schedule() | `RepeatedTimer.java:146-148` |
+| □ finally { this.lock.unlock() } | 释放锁 | `RepeatedTimer.java:149-151` |
 
-### 5.6 destroy() 逐行分析
+### 5.6 schedule() 逐行分析
 
-**源码**：`RepeatedTimer.java:195-225`
+**源码**：`RepeatedTimer.java:176-193`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
-|------|------|--------|
-| □ this.destroyed == true | return（幂等） | `RepeatedTimer.java:198-200` |
-| □ !this.running | invokeDestroyed = true | `RepeatedTimer.java:202-204` |
-| □ this.stopped | return（已停止，不需要取消 timeout） | `RepeatedTimer.java:205-207` |
-| □ this.timeout != null && cancel() 成功 | invokeDestroyed = true; running = false | `RepeatedTimer.java:208-213` |
-| □ finally | timer.stop() + if(invokeDestroyed) onDestroy() | `RepeatedTimer.java:215-220` |
+|------|------|-----|
+| □ this.timeout != null | this.timeout.cancel()（先取消旧的 timeout） | `RepeatedTimer.java:177-179` |
+| □ this.timeout == null | 直接创建新 timeout | `RepeatedTimer.java:177` |
+| □ timerTask lambda 中 catch(Throwable t) | LOG.error（内层异常保护，防止 Worker 线程崩溃） | `RepeatedTimer.java:183-185` |
+| □ 正常路径 | timer.newTimeout(timerTask, adjustTimeout(timeoutMs), MILLISECONDS) | `RepeatedTimer.java:187` |
+
+```java
+// RepeatedTimer.java:176-193（schedule）
+private void schedule() {
+    if (this.timeout != null) {
+        this.timeout.cancel();  // ← 先取消旧的 timeout（防止重复触发）
+    }
+    final TimerTask timerTask = timeout -> {
+        try {
+            RepeatedTimer.this.run();  // ← 触发 run()
+        } catch (final Throwable t) {
+            LOG.error("Run timer task failed, taskName={}.", RepeatedTimer.this.name, t);
+            // ← ⚠️ 内层异常保护，防止 HashedWheelTimer Worker 线程崩溃
+        }
+    };
+    // adjustTimeout() 允许子类动态调整超时时间（如 electionTimer 的随机化）
+    this.timeout = this.timer.newTimeout(timerTask, adjustTimeout(this.timeoutMs), TimeUnit.MILLISECONDS);
+}
+```
+
+⚠️ **`schedule()` 的双层异常保护**：
+1. `HashedWheelTimeout.expire()` 中有 `catch(Throwable)` 保护 Worker 线程
+2. `schedule()` 的 lambda 中又有一层 `catch(Throwable)` 保护
+
+这是双保险设计：即使 `run()` 内部抛出异常，也不会影响 Worker 线程的正常运行。
+
+### 5.7 restart() 逐行分析
+
+**源码**：`RepeatedTimer.java:162-175`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ this.destroyed == true | return（已销毁，幂等） | `RepeatedTimer.java:164-166` |
+| □ 正常路径 | stopped=false; running=true; schedule() | `RepeatedTimer.java:167-169` |
+| □ finally { this.lock.unlock() } | 释放锁 | `RepeatedTimer.java:170-172` |
+
+```java
+// RepeatedTimer.java:162-175（restart）
+public void restart() {
+    this.lock.lock();
+    try {
+        if (this.destroyed) {
+            return;  // ← 已销毁，幂等
+        }
+        this.stopped = false;
+        this.running = true;
+        schedule();  // ← 直接重新调度，不检查 stopped/running 状态
+    } finally {
+        this.lock.unlock();
+    }
+}
+```
+
+📌 **`restart()` vs `start()` 的关键差异**：
+
+| 维度 | `start()` | `restart()` |
+|------|---------|----------|
+| 检查 `stopped` | 是（`!stopped` 则 return） | 否（直接覆盖） |
+| 检查 `running` | 是（`running` 则 return） | 否（直接覆盖） |
+| 适用场景 | 初始启动（幂等） | 强制重新调度（如收到心跳后重置选举超时） |
+
+### 5.8 stop() 逐行分析
+
+**源码**：`RepeatedTimer.java:259-275`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ this.stopped == true | return（幂等） | `RepeatedTimer.java:261-263` |
+| □ this.stopped = true | 设置停止标志 | `RepeatedTimer.java:264` |
+| □ this.timeout != null | cancel() + running=false + timeout=null | `RepeatedTimer.java:265-269` |
+| □ this.timeout == null | 不做任何事 | `RepeatedTimer.java:265` |
+| □ finally { this.lock.unlock() } | 释放锁 | `RepeatedTimer.java:270-272` |
+
+```java
+// RepeatedTimer.java:259-275（stop）
+public void stop() {
+    this.lock.lock();
+    try {
+        if (this.stopped) {
+            return;  // ← 幂等
+        }
+        this.stopped = true;
+        if (this.timeout != null) {
+            this.timeout.cancel();  // ← 取消当前调度的 timeout
+            this.running = false;
+            this.timeout = null;
+        }
+    } finally {
+        this.lock.unlock();
+    }
+}
+```
+
+⚠️ **`stop()` vs `destroy()` 的关键差异**：
+- `stop()`：只停止定时器，不调用 `timer.stop()`，可以再次 `start()`
+- `destroy()`：调用 `timer.stop()`，不可恢复（`destroyed=true`）
+
+### 5.9 destroy() 逐行分析
+
+**源码**：`RepeatedTimer.java:225-257`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ this.destroyed == true | return（幂等） | `RepeatedTimer.java:228-230` |
+| □ this.destroyed = true | 设置销毁标志 | `RepeatedTimer.java:231` |
+| □ !this.running | invokeDestroyed = true | `RepeatedTimer.java:232-234` |
+| □ this.stopped | return（已停止，不需要取消 timeout） | `RepeatedTimer.java:235-237` |
+| □ this.stopped = true | 设置停止标志 | `RepeatedTimer.java:238` |
+| □ this.timeout != null && cancel() 成功 | invokeDestroyed=true; running=false | `RepeatedTimer.java:239-242` |
+| □ this.timeout = null（无论 cancel 是否成功） | 清空 timeout 引用 | `RepeatedTimer.java:243` |
+| □ finally: lock.unlock() | 释放锁 | `RepeatedTimer.java:245` |
+| □ finally: timer.stop() | 停止底层定时器（共享模式下引用计数-1） | `RepeatedTimer.java:246` |
+| □ finally: if(invokeDestroyed) onDestroy() | 在锁外调用，避免死锁 | `RepeatedTimer.java:247-249` |
+
+```java
+// RepeatedTimer.java:225-257（destroy）
+public void destroy() {
+    boolean invokeDestroyed = false;
+    this.lock.lock();
+    try {
+        if (this.destroyed) {
+            return;  // ← 幂等
+        }
+        this.destroyed = true;
+        if (!this.running) {
+            invokeDestroyed = true;  // ← 未运行中，可以立即销毁
+        }
+        if (this.stopped) {
+            return;  // ← 已停止，不需要取消 timeout
+        }
+        this.stopped = true;
+        if (this.timeout != null) {
+            if (this.timeout.cancel()) {
+                invokeDestroyed = true;
+                this.running = false;
+            }
+            this.timeout = null;  // ← ⚠️ 无论 cancel 是否成功，都清空 timeout 引用
+        }
+    } finally {
+        this.lock.unlock();          // ← 先释放锁
+        this.timer.stop();           // ← 再停止定时器（在锁外）
+        if (invokeDestroyed) {
+            onDestroy();             // ← 在锁外调用，避免死锁
+        }
+    }
+}
+```
 
 ⚠️ **`destroy()` 的延迟销毁机制**：如果 `invoking == true`（正在执行 `onTrigger()`），`destroy()` 不会立即调用 `onDestroy()`，而是设置 `destroyed = true`，等 `run()` 执行完后检测到 `destroyed` 标志，再调用 `onDestroy()`。这避免了在 `onTrigger()` 执行期间销毁定时器导致的并发问题。
 
