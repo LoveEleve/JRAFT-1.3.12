@@ -175,7 +175,7 @@ remote://192.168.1.1:8080/12345678
 
 ### 3.2 CopySession 字段分析
 
-**源码**：`CopySession.java:60-80`（字段定义区域）
+**源码**：`CopySession.java:62-80`（字段定义区域）
 
 ```java
 private final Lock                   lock;           // 保护所有状态的互斥锁
@@ -640,10 +640,21 @@ private void onFinished() {
     }
 }
 ```
+
+### 6.4 CopySession.join() — 等待单文件传输完成
+
+**源码**：`CopySession.java:175-177`
+
+```java
+@Override
+public void join() throws InterruptedException {
+    this.finishLatch.await();  // ← 简单等待，无 catch，InterruptedException 直接向上抛
 }
 ```
 
-### 6.4 cancel() — 取消传输
+⚠️ **与 `LocalSnapshotCopier.join()` 的关键差异**：`CopySession.join()` 直接 `await()`，`InterruptedException` 不捕获直接向上抛；而 `LocalSnapshotCopier.join()` 调用 `future.get()`，有3个 catch 块（`InterruptedException` 重新抛出、`CancellationException` 静默忽略、`Exception` 包装为 `IllegalStateException`）。
+
+### 6.5 cancel() — 取消传输
 
 **源码**：`CopySession.java:157-173`
 
@@ -723,7 +734,7 @@ public final class FileService {
 }
 ```
 
-📌 **readerId 的设计**：初始值基于进程 ID 和纳秒时间戳混合计算，确保节点重启后 readerId 不会与旧的 readerId 冲突（防止 Follower 用旧 readerId 访问新的 FileReader）。
+📌 **readerId 的设计**：初始值基于进程 ID 和纳秒时间戳混合计算，确保节点重启后 readerId 不会与旧的 readerId 冲突（防止 Follower 用旧 readerId 访问新的 FileReader）。构造函数还会打印 `LOG.info("Initial file reader id in FileService is {}", initialValue)` 便于排查问题。
 
 ### 7.2 handleGetFile() — 处理文件读取请求
 
@@ -808,6 +819,13 @@ public boolean removeReader(final long readerId) {
 2. 返回的 `readerId` 被编码进 URI，通过 `InstallSnapshotResponse` 告知 Follower
 3. Follower 完成拷贝后，Leader 调用 `FileService.removeReader()` 清理
 
+**`addReader()` 分支穷举清单**（`FileService.java:138-145`）：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ putIfAbsent 返回 null（正常情况） | return readerId | `FileService.java:141` |
+| □ putIfAbsent 返回非 null（极罕见 ID 冲突） | return -1L | `FileService.java:143` |
+
 ---
 
 ## 8. SnapshotFileReader（Leader 端文件读取）
@@ -863,7 +881,7 @@ public int readFile(final ByteBufferCollector metaBufferCollector, final String 
 
 ### 8.2 LocalDirReader.readFileWithMeta() — 实际文件读取
 
-**源码**：`LocalDirReader.java:55-95`
+**源码**：`LocalDirReader.java:63-95`
 
 ```java
 // LocalDirReader.java:63-95
@@ -989,6 +1007,33 @@ private long calculateCheckTimeUs(final long currTimeUs) {
 ---
 
 ## 10. LocalSnapshotCopier 的调用流程
+
+### 10.0 startCopy() — 后台线程入口
+
+**源码**：`LocalSnapshotCopier.java:80-87`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ internalCopy() 正常返回 | 拷贝完成 | `LocalSnapshotCopier.java:82` |
+| □ catch(InterruptedException e) | Thread.currentThread().interrupt()（恢复中断标志） | `LocalSnapshotCopier.java:83-85` |
+| □ catch(IOException e) | **LOG.error("Fail to start copy job", e)（只打日志，不调用 setError()！）** | `LocalSnapshotCopier.java:86-87` |
+
+```java
+// LocalSnapshotCopier.java:80-87
+private void startCopy() {
+    try {
+        internalCopy();
+    } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt(); // reset/ignore
+    } catch (final IOException e) {
+        LOG.error("Fail to start copy job", e);  // ← ⚠️ 只打日志！不调用 setError()！
+    }
+}
+```
+
+⚠️ **重要设计细节**：`catch(IOException)` 只打日志，**不调用 `setError()`**。这意味着如果 `internalCopy()` 抛出 `IOException`（如磁盘满、权限不足），`LocalSnapshotCopier` 的状态仍然是 OK，但实际上拷贝失败了。调用方需要通过 `getReader()` 返回 null 来感知失败，而不是通过 `status()`。
 
 ### 10.1 internalCopy() — 完整拷贝流程
 
@@ -1125,9 +1170,10 @@ void copyFile(final String fileName) throws IOException, InterruptedException {
             return;
         }
     }
-    Session session = null;
     // ⚠️ meta 在锁外获取（remoteSnapshot 是只读的，无需加锁）
+    // 注意：meta 在 session 之前声明（源码顺序）
     final LocalFileMeta meta = (LocalFileMeta) this.remoteSnapshot.getFileMeta(fileName);
+    Session session = null;
     try {
         this.lock.lock();
         try {
@@ -1242,7 +1288,7 @@ private void filter() throws IOException {
 | □ localMeta.getSource() == FILE_SOURCE_LOCAL | Files.createLink()（硬链接复用，无需网络传输） | `LocalSnapshotCopier.java:237-243` |
 | □ catch(IOException) 创建硬链接失败 | LOG.error + continue（**不是 return！** 降级为重新下载） | `LocalSnapshotCopier.java:241-243` |
 | □ toRemove.peekLast().equals(fileName) | toRemove.pollLast()（硬链接成功，从删除列表移除） | `LocalSnapshotCopier.java:244-246` |
-| □ localMeta.getSource() != FILE_SOURCE_LOCAL（FILE_SOURCE_REFERENCE） | **直接 fall through 到 writer.addFile()**（不创建硬链接，直接注册引用） | `LocalSnapshotCopier.java:249` |
+| □ localMeta.getSource() != FILE_SOURCE_LOCAL（FILE_SOURCE_REFERENCE） | **直接 fall through 到 writer.addFile()**（不创建硬链接，直接注册引用；FILE_SOURCE_LOCAL 硬链接成功后也同样 fall through） | `LocalSnapshotCopier.java:249` |
 | □ !writer.sync() | LOG.error + return false | `LocalSnapshotCopier.java:252-254` |
 
 当 `filterBeforeCopyRemote=true` 时，在拷贝前先对比本地已有快照和远端快照的 checksum：
@@ -1266,6 +1312,7 @@ private void filter() throws IOException {
 | □ isOk() == true | setError(ECANCELED, "Cancel the copier manually.") | `LocalSnapshotCopier.java:394-396` |
 | □ this.curSession != null | curSession.cancel()（取消当前正在进行的 CopySession） | `LocalSnapshotCopier.java:398-400` |
 | □ this.future != null | future.cancel(true)（中断后台拷贝线程） | `LocalSnapshotCopier.java:401-403` |
+| □ finally | this.lock.unlock()（无论是否 return 都释放锁） | `LocalSnapshotCopier.java:405-407` |
 
 ```java
 // LocalSnapshotCopier.java:390-410
