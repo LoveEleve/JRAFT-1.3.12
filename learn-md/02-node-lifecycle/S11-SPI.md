@@ -116,10 +116,10 @@ classDiagram
 
 ## 3. `@SPI` 注解 — 优先级标记
 
-**源码**：`SPI.java:33-38`
+**源码**：`SPI.java:29-37`
 
 ```java
-// SPI.java:33-38
+// SPI.java:29-37
 @Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ ElementType.TYPE })
@@ -152,7 +152,7 @@ public @interface SPI {
 
 ### 4.2 核心字段分析
 
-**源码**：`JRaftServiceLoader.java:43-55`
+**源码**：`JRaftServiceLoader.java:49-58`
 
 | 字段 | 类型 | 作用 | 源码行 |
 |------|------|------|--------|
@@ -171,12 +171,12 @@ public @interface SPI {
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ 遍历完所有实现，`first == null` | `throw ServiceConfigurationError("could not find any implementation")` | `JRaftServiceLoader.java:113-115` |
-| □ `providers.get(first.getName()) != null`（已缓存）| 直接返回缓存实例 | `JRaftServiceLoader.java:117-119` |
-| □ `providers.get(first.getName()) == null`（未缓存）| `newProvider(first)` 实例化并缓存 | `JRaftServiceLoader.java:121` |
+| □ 遍历完所有实现，`first == null` | `throw ServiceConfigurationError("could not find any implementation")` | `JRaftServiceLoader.java:112-113` |
+| □ `providers.get(first.getName()) != null`（已缓存）| 直接返回缓存实例 | `JRaftServiceLoader.java:116-117` |
+| □ `providers.get(first.getName()) == null`（未缓存）| `newProvider(first)` 实例化并缓存 | `JRaftServiceLoader.java:120-121` |
 
 ```java
-// JRaftServiceLoader.java:68-105（first() 核心逻辑）
+// JRaftServiceLoader.java:92-121（first() 核心逻辑）
 public S first() {
     final Iterator<Class<S>> it = classIterator();
     Class<S> first = null;
@@ -210,15 +210,15 @@ public S first() {
 
 ### 4.4 `find(implName)` — 按名称查找
 
-**源码**：`JRaftServiceLoader.java:124-143`
+**源码**：`JRaftServiceLoader.java:124-142`
 
 **分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ 在 `providers` 中找到匹配的 `@SPI(name=implName)` | 直接返回缓存实例 | `JRaftServiceLoader.java:125-130` |
-| □ 在 `lookupIterator` 中找到匹配的 `@SPI(name=implName)` | `newProvider(cls)` 实例化 | `JRaftServiceLoader.java:131-137` |
-| □ catch(Throwable) | `throw ServiceConfigurationError("could not be instantiated")` | `JRaftServiceLoader.java:138-140` |
+| □ 在 `providers` 中找到匹配的 `@SPI(name=implName)` | 直接返回缓存实例 | `JRaftServiceLoader.java:124-129` |
+| □ 在 `lookupIterator` 中找到匹配的 `@SPI(name=implName)` | `newProvider(cls)` 实例化 | `JRaftServiceLoader.java:131-136` |
+| □ catch(Throwable)（`newProvider` 抛出异常）| `throw ServiceConfigurationError("could not be instantiated")` | `JRaftServiceLoader.java:137-139` |
 | □ 遍历完都没找到 | `throw ServiceConfigurationError("provider not found")` | `JRaftServiceLoader.java:142` |
 
 ### 4.5 `newProvider(cls)` — 实例化并缓存
@@ -229,26 +229,26 @@ public S first() {
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ `cls.newInstance()` 成功 | 放入 `providers` 缓存，打印 INFO 日志，返回实例 | `JRaftServiceLoader.java:276-280` |
-| □ catch(Throwable) | `throw ServiceConfigurationError("could not be instantiated")` | `JRaftServiceLoader.java:281-283` |
+| □ `cls.newInstance()` 成功 | 放入 `providers` 缓存，打印 INFO 日志，返回实例 | `JRaftServiceLoader.java:277-279` |
+| □ catch(Throwable) | `throw ServiceConfigurationError("could not be instantiated")` | `JRaftServiceLoader.java:280-281` |
 
 ```java
-// JRaftServiceLoader.java:274-283（newProvider）
+// JRaftServiceLoader.java:274-282（newProvider）
 private S newProvider(final Class<S> cls) {
-    LOG.info("SPI service [{} - {}] loading.", this.service.getName(), cls.getName());
-    try {
-        final S provider = this.service.cast(cls.newInstance());
-        this.providers.put(cls.getName(), provider);  // ← 放入缓存
-        return provider;
-    } catch (final Throwable x) {
-        throw fail(this.service, "provider " + cls.getName() + " could not be instantiated", x);
+    LOG.info("SPI service [{} - {}] loading.", this.service.getName(), cls.getName());  // 275
+    try {  // 276
+        final S provider = this.service.cast(cls.newInstance());  // 277
+        this.providers.put(cls.getName(), provider);  // 278 ← 放入缓存
+        return provider;  // 279
+    } catch (final Throwable x) {  // 280
+        throw fail(this.service, "provider " + cls.getName() + " could not be instantiated", x);  // 281
     }
 }
 ```
 
 ### 4.6 `LazyIterator` — 懒加载迭代器
 
-**源码**：`JRaftServiceLoader.java:285-345`
+**源码**：`JRaftServiceLoader.java:285-342`
 
 `LazyIterator` 是真正读取 `META-INF/services/` 文件的地方，采用**懒加载**策略：只有在调用 `hasNext()` 时才真正扫描文件系统。
 
@@ -256,27 +256,27 @@ private S newProvider(final Class<S> cls) {
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ `nextName != null`（已预读下一个类名）| 直接返回 true | `JRaftServiceLoader.java:298` |
-| □ `configs == null`（首次调用，未加载文件列表）| 加载 `META-INF/services/接口名` 的所有 URL | `JRaftServiceLoader.java:300-308` |
-| □ catch(IOException) | `throw ServiceConfigurationError("error locating configuration files")` | `JRaftServiceLoader.java:309-311` |
+| □ `nextName != null`（已预读下一个类名）| 直接返回 true | `JRaftServiceLoader.java:299` |
+| □ `configs == null`（首次调用，未加载文件列表）| 加载 `META-INF/services/接口名` 的所有 URL | `JRaftServiceLoader.java:301-309` |
+| □ catch(IOException) | `throw ServiceConfigurationError("error locating configuration files")` | `JRaftServiceLoader.java:310-312` |
 | □ `pending == null \|\| !pending.hasNext()`（当前文件读完）| 切换到下一个 URL，调用 `parse()` | `JRaftServiceLoader.java:313-317` |
-| □ `!configs.hasMoreElements()`（所有 URL 都读完）| 返回 false | `JRaftServiceLoader.java:314-316` |
+| □ `!configs.hasMoreElements()`（所有 URL 都读完）| 返回 false | `JRaftServiceLoader.java:314-315` |
 | □ 正常读到下一个类名 | `nextName = pending.next()`，返回 true | `JRaftServiceLoader.java:318-319` |
 
 **`next()` 分支穷举清单**：
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ `!hasNext()` | `throw NoSuchElementException` | `JRaftServiceLoader.java:326-328` |
-| □ `Class.forName(name)` 失败（类不存在）| `throw ServiceConfigurationError("provider not found")` | `JRaftServiceLoader.java:333-335` |
-| □ `!service.isAssignableFrom(cls)`（类型不匹配）| `throw ServiceConfigurationError("not a subtype")` | `JRaftServiceLoader.java:337-339` |
-| □ 正常 | 返回 `Class<S>` | `JRaftServiceLoader.java:340` |
+| □ `!hasNext()` | `throw NoSuchElementException` | `JRaftServiceLoader.java:327-328` |
+| □ catch(ClassNotFoundException)（`Class.forName` 失败）| `throw ServiceConfigurationError("provider not found")` | `JRaftServiceLoader.java:333-334` |
+| □ `!service.isAssignableFrom(cls)`（类型不匹配）| `throw ServiceConfigurationError("not a subtype")` | `JRaftServiceLoader.java:336-337` |
+| □ 正常 | 返回 `Class<S>` | `JRaftServiceLoader.java:339` |
 
 ---
 
 ## 5. `JRaftServiceFactory` — 核心组件工厂接口
 
-**源码**：`JRaftServiceFactory.java:1-62`
+**源码**：`JRaftServiceFactory.java:31-62`
 
 ```java
 // JRaftServiceFactory.java:31-62
@@ -309,33 +309,33 @@ public interface JRaftServiceFactory {
 **源码**：`DefaultJRaftServiceFactory.java:1-73`
 
 ```java
-// DefaultJRaftServiceFactory.java:41-73
-@SPI  // ← 无 priority，默认 priority=0
-public class DefaultJRaftServiceFactory implements JRaftServiceFactory {
+// DefaultJRaftServiceFactory.java:41-71
+@SPI  // 41 ← 无 priority，默认 priority=0
+public class DefaultJRaftServiceFactory implements JRaftServiceFactory {  // 42
 
     @Override
-    public LogStorage createLogStorage(final String uri, final RaftOptions raftOptions) {
-        Requires.requireTrue(StringUtils.isNotBlank(uri), "Blank log storage uri.");
-        return new RocksDBLogStorage(uri, raftOptions);  // ← 默认 RocksDB（第49行）
+    public LogStorage createLogStorage(final String uri, final RaftOptions raftOptions) {  // 49
+        Requires.requireTrue(StringUtils.isNotBlank(uri), "Blank log storage uri.");  // 50
+        return new RocksDBLogStorage(uri, raftOptions);  // 51 ← 默认 RocksDB
     }
 
     @Override
-    public SnapshotStorage createSnapshotStorage(final NodeOptions nodeOptions) {
+    public SnapshotStorage createSnapshotStorage(final NodeOptions nodeOptions) {  // 55
         String uri = nodeOptions.getSnapshotUri();
         String tempUri = nodeOptions.getSnapshotTempUri();
         Requires.requireTrue(!StringUtils.isBlank(uri), "Blank snapshot storage uri.");
-        return new LocalSnapshotStorage(uri, tempUri, nodeOptions.getRaftOptions());  // ← 本地文件（第55行）
+        return new LocalSnapshotStorage(uri, tempUri, nodeOptions.getRaftOptions());  // 59 ← 本地文件
     }
 
     @Override
-    public RaftMetaStorage createRaftMetaStorage(final String uri, final RaftOptions raftOptions) {
+    public RaftMetaStorage createRaftMetaStorage(final String uri, final RaftOptions raftOptions) {  // 63
         Requires.requireTrue(!StringUtils.isBlank(uri), "Blank raft meta storage uri.");
-        return new LocalRaftMetaStorage(uri, raftOptions);  // ← 本地 Protobuf 文件（第63行）
+        return new LocalRaftMetaStorage(uri, raftOptions);  // 65 ← 本地 Protobuf 文件
     }
 
     @Override
-    public LogEntryCodecFactory createLogEntryCodecFactory() {
-        return LogEntryV2CodecFactory.getInstance();  // ← V2 Protobuf 编码（第69行）
+    public LogEntryCodecFactory createLogEntryCodecFactory() {  // 69
+        return LogEntryV2CodecFactory.getInstance();  // 70 ← V2 Protobuf 编码
     }
 }
 ```
@@ -370,9 +370,9 @@ public class BDBLogStorageJRaftServiceFactory extends DefaultJRaftServiceFactory
 
 ```java
 // NodeOptions.java:38-40（类静态初始化）
-public static final JRaftServiceFactory defaultServiceFactory =
-    JRaftServiceLoader.load(JRaftServiceFactory.class)  // NodeOptions.java:38
-        .first();  // ← 类加载时立即执行，选优先级最高的实现
+public static final JRaftServiceFactory defaultServiceFactory  // 38
+    = JRaftServiceLoader.load(JRaftServiceFactory.class)       // 38
+        .first();  // 39 ← 类加载时立即执行，选优先级最高的实现
 ```
 
 **关键设计**：`defaultServiceFactory` 是 `static final` 字段，在 `NodeOptions` 类加载时就执行 SPI 扫描。这意味着：
@@ -383,24 +383,28 @@ public static final JRaftServiceFactory defaultServiceFactory =
 
 ```java
 // NodeOptions.java:172（默认值）
-private JRaftServiceFactory serviceFactory = defaultServiceFactory;
+private JRaftServiceFactory serviceFactory = defaultServiceFactory;  // 172
 
-// NodeOptions.java:191-193（用户覆盖）
-public void setServiceFactory(final JRaftServiceFactory serviceFactory) {  // NodeOptions.java:191
+// NodeOptions.java:187-193（getter/setter）
+public JRaftServiceFactory getServiceFactory() {  // 187
+    return this.serviceFactory;
+}
+
+public void setServiceFactory(final JRaftServiceFactory serviceFactory) {  // 191
     this.serviceFactory = serviceFactory;
 }
 ```
 
 ### 6.1 `NodeImpl.init()` 中的使用
 
-**源码**：`NodeImpl.java:902`、`NodeImpl.java:580-595`
+**源码**：`NodeImpl.java:808`、`NodeImpl.java:578-595`
 
 ```java
-// NodeImpl.java:902（init 入口）
-this.serviceFactory = opts.getServiceFactory();
+// NodeImpl.java:808（init 中赋值）
+this.serviceFactory = opts.getServiceFactory();  // 808
 
 // NodeImpl.java:578-595（initLogStorage 中使用）
-private boolean initLogStorage() {
+private boolean initLogStorage() {  // 578
     // 通过工厂创建 LogStorage
     this.logStorage = this.serviceFactory.createLogStorage(
         this.options.getLogUri(), this.raftOptions);  // NodeImpl.java:580
@@ -414,7 +418,7 @@ private boolean initLogStorage() {
 }
 
 // NodeImpl.java:594-595（initMetaStorage 中使用）
-private boolean initMetaStorage() {
+private boolean initMetaStorage() {  // 594
     this.metaStorage = this.serviceFactory.createRaftMetaStorage(
         this.options.getRaftMetaUri(), this.raftOptions);  // NodeImpl.java:595
     // ...
@@ -433,10 +437,10 @@ private boolean initMetaStorage() {
 
 ```
 # jraft-core/META-INF/services/com.alipay.sofa.jraft.rpc.RaftRpcFactory
-com.alipay.sofa.jraft.rpc.impl.BoltRaftRpcFactory   ← 默认（priority=0）
+com.alipay.sofa.jraft.rpc.impl.BoltRaftRpcFactory   ← 默认（@SPI，priority=0）
 
 # jraft-extension/rpc-grpc-impl/META-INF/services/com.alipay.sofa.jraft.rpc.RaftRpcFactory
-com.alipay.sofa.jraft.rpc.impl.GrpcRaftRpcFactory   ← gRPC 扩展（priority=?）
+com.alipay.sofa.jraft.rpc.impl.GrpcRaftRpcFactory   ← gRPC 扩展（@SPI(priority=1)）
 ```
 
 ### 7.2 `RpcFactoryHelper` — 静态单例加载
@@ -444,18 +448,18 @@ com.alipay.sofa.jraft.rpc.impl.GrpcRaftRpcFactory   ← gRPC 扩展（priority=?
 **源码**：`RpcFactoryHelper.java:1-38`
 
 ```java
-// RpcFactoryHelper.java:26-37
-public class RpcFactoryHelper {
+// RpcFactoryHelper.java:25-36
+public class RpcFactoryHelper {  // 25
 
     // 类加载时立即执行 SPI 扫描，选优先级最高的 RaftRpcFactory
-    private static final RaftRpcFactory RPC_FACTORY =
-        JRaftServiceLoader.load(RaftRpcFactory.class).first();  // RpcFactoryHelper.java:27
+    private static final RaftRpcFactory RPC_FACTORY =  // 27
+        JRaftServiceLoader.load(RaftRpcFactory.class).first();
 
-    public static RaftRpcFactory rpcFactory() {  // RpcFactoryHelper.java:30
+    public static RaftRpcFactory rpcFactory() {  // 30
         return RPC_FACTORY;
     }
 
-    public static RpcResponseFactory responseFactory() {  // RpcFactoryHelper.java:34
+    public static RpcResponseFactory responseFactory() {  // 34
         return RPC_FACTORY.getRpcResponseFactory();
     }
 }
@@ -470,12 +474,12 @@ public class RpcFactoryHelper {
 | 方法 | 作用 | 源码行 |
 |------|------|--------|
 | `registerProtobufSerializer(className, args)` | 注册 Protobuf 序列化器（不同 RPC 框架的注册方式不同）| `RaftRpcFactory.java:38` |
-| `createRpcClient(helper)` | 创建 RPC 客户端 | `RaftRpcFactory.java:52` |
-| `createRpcServer(endpoint, helper)` | 创建 RPC 服务端 | `RaftRpcFactory.java:64` |
-| `isReplicatorPipelineEnabled()` | 是否支持 Pipeline 复制（默认 true）| `RaftRpcFactory.java:82` |
-| `ensurePipeline()` | 确保 RPC 框架支持 Pipeline | `RaftRpcFactory.java:87` |
-| `defaultJRaftClientConfigHelper(opts)` | 默认客户端配置辅助（默认返回 null）| `RaftRpcFactory.java:90` |
-| `defaultJRaftServerConfigHelper(opts)` | 默认服务端配置辅助（默认返回 null）| `RaftRpcFactory.java:95` |
+| `createRpcClient(helper)` | 创建 RPC 客户端 | `RaftRpcFactory.java:55` |
+| `createRpcServer(endpoint, helper)` | 创建 RPC 服务端 | `RaftRpcFactory.java:74` |
+| `isReplicatorPipelineEnabled()` | 是否支持 Pipeline 复制（默认 true）| `RaftRpcFactory.java:85` |
+| `ensurePipeline()` | 确保 RPC 框架支持 Pipeline | `RaftRpcFactory.java:92` |
+| `defaultJRaftClientConfigHelper(opts)` | 默认客户端配置辅助（默认返回 null）| `RaftRpcFactory.java:95` |
+| `defaultJRaftServerConfigHelper(opts)` | 默认服务端配置辅助（默认返回 null）| `RaftRpcFactory.java:100` |
 
 ---
 
@@ -490,7 +494,7 @@ public class RpcFactoryHelper {
 **源码**：`StorageOptionsFactory.java:43-45`
 
 ```java
-// StorageOptionsFactory.java:43-45（三张配置表）
+// StorageOptionsFactory.java:43-45（三张配置表，均为 ConcurrentHashMap）
 private static final Map<String, DBOptions>             rocksDBOptionsTable      = new ConcurrentHashMap<>();
 private static final Map<String, ColumnFamilyOptions>   columnFamilyOptionsTable = new ConcurrentHashMap<>();
 private static final Map<String, BlockBasedTableConfig> tableFormatConfigTable   = new ConcurrentHashMap<>();
@@ -502,30 +506,33 @@ private static final Map<String, BlockBasedTableConfig> tableFormatConfigTable  
 
 ### 8.2 `getRocksDBOptions()` 分支穷举清单
 
-**源码**：`StorageOptionsFactory.java:113-130`
+**源码**：`StorageOptionsFactory.java:113-128`
 
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
-| □ `opts != null`（用户已注册自定义配置）| 返回 `new DBOptions(opts)`（浅拷贝）| `StorageOptionsFactory.java:127` |
-| □ `opts == null`（未注册，首次调用）| `getDefaultRocksDBOptions()` 创建默认值 | `StorageOptionsFactory.java:117` |
-| □ `putIfAbsent` 返回非 null（并发竞争，另一个线程已写入）| 关闭新建的 `newOpts`，使用已存在的 | `StorageOptionsFactory.java:121-123` |
+| □ `cls == null`（前置检查）| `throw IllegalArgumentException` | `StorageOptionsFactory.java:114` |
+| □ `opts != null`（用户已注册自定义配置）| 直接跳到 128 行返回 `new DBOptions(opts)`（浅拷贝）| `StorageOptionsFactory.java:128` |
+| □ `opts == null`（未注册，首次调用）| `getDefaultRocksDBOptions()` 创建默认值 | `StorageOptionsFactory.java:118` |
+| □ `putIfAbsent` 返回 null（自己写入成功）| `opts = newOpts`，继续到 128 行返回 | `StorageOptionsFactory.java:119-121` |
+| □ `putIfAbsent` 返回非 null（并发竞争，另一个线程已写入）| 关闭新建的 `newOpts`，使用已存在的 | `StorageOptionsFactory.java:122-124` |
 
 ```java
-// StorageOptionsFactory.java:113-130（getRocksDBOptions 核心逻辑）
+// StorageOptionsFactory.java:113-128（getRocksDBOptions 核心逻辑）
 public static DBOptions getRocksDBOptions(final String groupId, final Class<?> cls) {
-    String key = buildKey(groupId, cls);
-    DBOptions opts = rocksDBOptionsTable.get(key);
-    if (opts == null) {
-        final DBOptions newOpts = getDefaultRocksDBOptions();
-        opts = rocksDBOptionsTable.putIfAbsent(key, newOpts);
-        if (opts == null) {
-            opts = newOpts;  // ← 自己写入成功
+    Requires.requireNonNull(cls, "cls");  // 114 ← cls==null 抛 IllegalArgumentException
+    String key = buildKey(groupId, cls);  // 115
+    DBOptions opts = rocksDBOptionsTable.get(key);  // 116
+    if (opts == null) {  // 117
+        final DBOptions newOpts = getDefaultRocksDBOptions();  // 118
+        opts = rocksDBOptionsTable.putIfAbsent(key, newOpts);  // 119
+        if (opts == null) {  // 120
+            opts = newOpts;  // 121 ← 自己写入成功
         } else {
-            newOpts.close();  // ← 并发竞争失败，关闭多余的对象（避免 native 内存泄漏）
+            newOpts.close();  // 123 ← 并发竞争失败，关闭多余的对象（避免 native 内存泄漏）
         }
     }
     // 注意：返回浅拷贝，避免用户修改影响全局配置
-    return new DBOptions(checkInvalid(opts));
+    return new DBOptions(checkInvalid(opts));  // 128
 }
 ```
 
@@ -533,7 +540,7 @@ public static DBOptions getRocksDBOptions(final String groupId, final Class<?> c
 
 ### 8.3 默认 RocksDB 配置（关键参数）
 
-**源码**：`StorageOptionsFactory.java:131-155`（DBOptions）、`StorageOptionsFactory.java:222-280`（ColumnFamilyOptions）
+**源码**：`StorageOptionsFactory.java:131-175`（DBOptions）、`StorageOptionsFactory.java:222-315`（ColumnFamilyOptions）、`StorageOptionsFactory.java:355-370`（BlockBasedTableConfig）
 
 **DBOptions 默认值**：
 
@@ -577,8 +584,8 @@ JRaft 中所有 SPI 注册文件：
 
 | 注册文件 | 默认实现 | 扩展实现 |
 |---------|---------|---------|
-| `META-INF/services/com.alipay.sofa.jraft.JRaftServiceFactory` | `DefaultJRaftServiceFactory`（priority=0）| `BDBLogStorageJRaftServiceFactory`（priority=1）、`HybridLogJRaftServiceFactory` |
-| `META-INF/services/com.alipay.sofa.jraft.rpc.RaftRpcFactory` | `BoltRaftRpcFactory` | `GrpcRaftRpcFactory` |
+| `META-INF/services/com.alipay.sofa.jraft.JRaftServiceFactory` | `DefaultJRaftServiceFactory`（@SPI，priority=0）| `BDBLogStorageJRaftServiceFactory`（@SPI priority=1）、`HybridLogJRaftServiceFactory` |
+| `META-INF/services/com.alipay.sofa.jraft.rpc.RaftRpcFactory` | `BoltRaftRpcFactory`（@SPI，priority=0）| `GrpcRaftRpcFactory`（@SPI priority=1）|
 | `META-INF/services/com.alipay.sofa.jraft.util.timer.RaftTimerFactory` | `DefaultRaftTimerFactory` | — |
 | `META-INF/services/com.alipay.sofa.jraft.util.JRaftSignalHandler` | — | 用户自定义信号处理器 |
 
