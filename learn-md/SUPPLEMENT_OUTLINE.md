@@ -904,7 +904,7 @@ Client → Node.apply(Task)
 - [ ] **S6**：gRPC 实现对比 Bolt（~43KB，预计 3 小时）
 - [ ] **S7**：RheaKV Placement Driver（~80KB，预计 4-6 小时）
 - [ ] **S11**：SPI 扩展机制 + JRaftServiceFactory（~35KB，预计 2 小时）
-- [ ] **S12**：HashedWheelTimer 时间轮实现（~48KB，预计 3 小时）
+- [x] **S12**：HashedWheelTimer 时间轮实现（~48KB，✅ 已完成 → `11-concurrency-infra/S12-HashedWheelTimer.md`）
 - [ ] **S13**：Protobuf 协议定义与消息结构（~7 个 proto 文件，预计 2 小时）
 - [ ] **S16**：NodeOptions/RaftOptions 配置项全解（~30KB，预计 2 小时）
 
