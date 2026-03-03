@@ -898,7 +898,7 @@ Client → Node.apply(Task)
 - [x] **S4**：Transfer Leadership（~200 行，✅ 已完成 → `03-leader-election/S4-Transfer-Leadership.md`）
 - [x] **S5**：Learner 角色机制（~150 行，✅ 已完成 → `09-membership-change/S5-Learner.md`）
 - [x] **S9**：节点优雅停机（shutdown/destroy）（~300 行，✅ 已完成 → `02-node-lifecycle/S9-Shutdown.md`）
-- [ ] **S10**：远程快照拷贝 RemoteFileCopier + CopySession（~21KB，预计 2 小时）
+- [x] **S10**：远程快照拷贝 RemoteFileCopier + CopySession（~21KB，✅ 已完成 → `06-snapshot/S10-Remote-File-Copier.md`）
 
 ### 第三批（P2 — 扩展模块与基础设施）
 - [ ] **S6**：gRPC 实现对比 Bolt（~43KB，预计 3 小时）
