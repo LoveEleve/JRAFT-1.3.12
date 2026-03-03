@@ -248,6 +248,9 @@ sequenceDiagram
     LSC->>RFC: init(uri, snapshotThrottle, opts)
     Note over RFC: 解析 uri → endpoint + readId<br/>rpcService.connect(endpoint)
 
+    LSC->>LSC: start() → ThreadPoolsFactory.runInThread(groupId, startCopy)
+    Note over LSC: ⚠️ start() 是异步的！<br/>后台线程执行 internalCopy()<br/>调用方通过 join() 等待完成
+
     LSC->>RFC: startCopyToFile(fileName, filePath, null)
     RFC->>CS: new CopySession(rpcService, timerManager, throttle, raftOptions, reqBuilder, endpoint)
     RFC->>CS: setOutputStream(out)
@@ -383,6 +386,7 @@ public boolean init(String uri, final SnapshotThrottle snapshotThrottle, final S
 | □ file.exists() && !file.delete() | LOG.error + return null | `RemoteFileCopier.java:112-115` |
 | □ file.exists() && file.delete() 成功 | 继续创建 OutputStream | `RemoteFileCopier.java:112-115` |
 | □ !file.exists() | 直接创建 OutputStream | `RemoteFileCopier.java:117-123` |
+| □ new FileOutputStream() 抛出 IOException | **方法签名 throws IOException，由调用方 copyFile() 的 finally 块处理** | `RemoteFileCopier.java:117` |
 | □ opts != null | session.setCopyOptions(opts) | `RemoteFileCopier.java:124-126` |
 | □ opts == null | 使用默认 CopyOptions（maxRetry=3, retryIntervalMs=1000ms, timeoutMs=10s） | `RemoteFileCopier.java:124-126` |
 
@@ -533,11 +537,12 @@ void sendNextRpc() {
 | □ !status.isOk() && code != EAGAIN && retryTimes < maxRetry | schedule timer 重试 | `CopySession.java:235-236` |
 | □ !status.isOk() && code == EAGAIN | **不增加** retryTimes，schedule timer 重试 | `CopySession.java:235-236` |
 | □ status.isOk() && response == null | Requires.requireNonNull 抛出 IllegalArgumentException | `CopySession.java:239` |
+| □ status.isOk() && !response.getEof() | **先** requestBuilder.setCount(response.getReadSize())（更新 count 为实际读取量） | `CopySession.java:241` |
 | □ status.isOk() && outputStream != null | response.getData().writeTo(outputStream) | `CopySession.java:243-245` |
 | □ catch(IOException) 写文件失败 | setError(EIO) + onFinished() + return | `CopySession.java:246-250` |
 | □ status.isOk() && outputStream == null | destBuf.put(response.getData()) | `CopySession.java:252` |
 | □ status.isOk() && response.eof == true | onFinished() → finishLatch.countDown() + return | `CopySession.java:254-256` |
-| □ status.isOk() && response.eof == false | 更新 count=readSize，lock.unlock()，sendNextRpc() | `CopySession.java:241 + 274` |
+| □ status.isOk() && response.eof == false | lock.unlock()（finally），sendNextRpc()（继续下一块） | `CopySession.java:274` |
 
 ```java
 // CopySession.java:215-274（核心逻辑）
@@ -861,6 +866,7 @@ public int readFile(final ByteBufferCollector metaBufferCollector, final String 
 **源码**：`LocalDirReader.java:55-95`
 
 ```java
+// LocalDirReader.java:63-95
 protected int readFileWithMeta(final ByteBufferCollector buf, final String fileName,
                                final Message fileMeta, long offset, final long maxCount)
                                throws IOException, RetryAgainException {
@@ -886,6 +892,10 @@ protected int readFileWithMeta(final ByteBufferCollector buf, final String fileN
             } else {
                 // 已读够 maxCount 字节，判断是否到文件末尾
                 final long fsize = file.length();
+                if (fsize < 0) {
+                    LOG.warn("Invalid file length {}", filePath);  // ← 文件长度异常（极罕见）
+                    return EOF;
+                }
                 if (fsize == offset + nread) {
                     return EOF;  // 恰好读到文件末尾
                 } else {
@@ -1084,7 +1094,7 @@ private void loadMetaTable() throws InterruptedException {
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
 | □ writer.getFileMeta(fileName) != null | LOG.info("Skipped") + return（文件已存在，跳过） | `LocalSnapshotCopier.java:110-112` |
-| □ !checkFile(fileName) | return（路径安全检查失败） | `LocalSnapshotCopier.java:113-115` |
+| □ !checkFile(fileName)（路径穿越检测失败 或 catch IOException） | **setError(EIO)（checkFile 内部设置）** + return | `LocalSnapshotCopier.java:113-115` |
 | □ 父目录不存在 && !parentDir.mkdirs() | LOG.error + setError(EIO) + return | `LocalSnapshotCopier.java:120-124` |
 | □ this.cancelled == true | setError(ECANCELED) + return | `LocalSnapshotCopier.java:130-133` |
 | □ startCopyToFile() 返回 null | LOG.error + setError(-1) + return | `LocalSnapshotCopier.java:133-137` |
@@ -1116,6 +1126,8 @@ void copyFile(final String fileName) throws IOException, InterruptedException {
         }
     }
     Session session = null;
+    // ⚠️ meta 在锁外获取（remoteSnapshot 是只读的，无需加锁）
+    final LocalFileMeta meta = (LocalFileMeta) this.remoteSnapshot.getFileMeta(fileName);
     try {
         this.lock.lock();
         try {
@@ -1172,7 +1184,8 @@ void copyFile(final String fileName) throws IOException, InterruptedException {
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
 | □ storage.create() 返回 null | setError(EIO) + return | `LocalSnapshotCopier.java:342-344` |
-| □ filterBeforeCopyRemote == true && filterBeforeCopy() 返回 false | writer.setError + closeQuietly + create(true)（重新创建空 writer） | `LocalSnapshotCopier.java:346-350` |
+| □ filterBeforeCopyRemote == true && filterBeforeCopy() 返回 false | writer.setError + closeQuietly(writer) + create(true)（重新创建空 writer） | `LocalSnapshotCopier.java:346-350` |
+| □ filterBeforeCopyRemote == true（无论 filterBeforeCopy 成功与否） | **closeQuietly(reader)**（无论过滤成功失败都释放 reader） | `LocalSnapshotCopier.java:350` |
 | □ filterBeforeCopyRemote == true && 重新 create() 返回 null | setError(EIO) + return | `LocalSnapshotCopier.java:352-354` |
 | □ filterBeforeCopyRemote == false | 直接创建空 writer（`create(true)` 表示清空已有内容） | `LocalSnapshotCopier.java:341` |
 | □ !writer.sync() | LOG.error + setError(EIO) | `LocalSnapshotCopier.java:356-359` |
@@ -1229,6 +1242,7 @@ private void filter() throws IOException {
 | □ localMeta.getSource() == FILE_SOURCE_LOCAL | Files.createLink()（硬链接复用，无需网络传输） | `LocalSnapshotCopier.java:237-243` |
 | □ catch(IOException) 创建硬链接失败 | LOG.error + continue（**不是 return！** 降级为重新下载） | `LocalSnapshotCopier.java:241-243` |
 | □ toRemove.peekLast().equals(fileName) | toRemove.pollLast()（硬链接成功，从删除列表移除） | `LocalSnapshotCopier.java:244-246` |
+| □ localMeta.getSource() != FILE_SOURCE_LOCAL（FILE_SOURCE_REFERENCE） | **直接 fall through 到 writer.addFile()**（不创建硬链接，直接注册引用） | `LocalSnapshotCopier.java:249` |
 | □ !writer.sync() | LOG.error + return false | `LocalSnapshotCopier.java:252-254` |
 
 当 `filterBeforeCopyRemote=true` 时，在拷贝前先对比本地已有快照和远端快照的 checksum：
@@ -1240,9 +1254,110 @@ private void filter() throws IOException {
 
 这是一个**增量快照传输**优化，避免重复传输未变化的文件。
 
----
+### 10.6 cancel() — 取消拷贝任务
 
-## 11. 并发安全分析
+**源码**：`LocalSnapshotCopier.java:390-410`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ this.cancelled == true | 直接 return（幂等保护） | `LocalSnapshotCopier.java:393` |
+| □ isOk() == true | setError(ECANCELED, "Cancel the copier manually.") | `LocalSnapshotCopier.java:394-396` |
+| □ this.curSession != null | curSession.cancel()（取消当前正在进行的 CopySession） | `LocalSnapshotCopier.java:398-400` |
+| □ this.future != null | future.cancel(true)（中断后台拷贝线程） | `LocalSnapshotCopier.java:401-403` |
+
+```java
+// LocalSnapshotCopier.java:390-410
+@Override
+public void cancel() {
+    this.lock.lock();
+    try {
+        if (this.cancelled) {
+            return;  // ← 幂等：已取消则直接返回
+        }
+        if (isOk()) {
+            setError(RaftError.ECANCELED, "Cancel the copier manually.");
+        }
+        this.cancelled = true;
+        if (this.curSession != null) {
+            this.curSession.cancel();  // ← 取消当前 CopySession（触发 finishLatch.countDown()）
+        }
+        if (this.future != null) {
+            this.future.cancel(true);  // ← 中断后台线程（internalCopy 中的 session.join() 会被 InterruptedException 打断）
+        }
+    } finally {
+        this.lock.unlock();
+    }
+}
+```
+
+📌 **cancel() 的级联取消机制**：
+1. `cancel()` 调用 `curSession.cancel()` → `CopySession.cancel()` 调用 `finishLatch.countDown()`
+2. `internalCopy()` 中的 `session.join()` 被唤醒，检查 `session.status()` 发现 ECANCELED
+3. `copyFile()` / `loadMetaTable()` 设置错误状态并 return
+4. `internalCopy()` 的 do-while 循环结束，清理 writer
+
+### 10.7 join() — 等待拷贝完成
+
+**源码**：`LocalSnapshotCopier.java:415-430`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ this.future == null | 直接 return（未启动，无需等待） | `LocalSnapshotCopier.java:416` |
+| □ future.get() 正常返回 | 拷贝完成 | `LocalSnapshotCopier.java:417` |
+| □ catch(InterruptedException e) | **重新抛出**（保留中断语义） | `LocalSnapshotCopier.java:418-419` |
+| □ catch(CancellationException ignored) | **静默忽略**（cancel() 导致的取消是正常流程） | `LocalSnapshotCopier.java:420-421` |
+| □ catch(Exception e) | LOG.error + throw IllegalStateException（包装未知异常） | `LocalSnapshotCopier.java:422-425` |
+
+```java
+// LocalSnapshotCopier.java:415-430
+@Override
+public void join() throws InterruptedException {
+    if (this.future != null) {
+        try {
+            this.future.get();
+        } catch (final InterruptedException e) {
+            throw e;  // ← 重新抛出，保留中断语义
+        } catch (final CancellationException ignored) {
+            // ← 静默忽略：cancel() 导致的 CancellationException 是正常流程
+        } catch (final Exception e) {
+            LOG.error("Fail to join on copier", e);
+            throw new IllegalStateException(e);  // ← 包装未知异常
+        }
+    }
+}
+```
+
+⚠️ **`CancellationException` 被静默忽略**：这是一个重要的设计决策。当 `cancel()` 被调用后，`future.cancel(true)` 会导致 `future.get()` 抛出 `CancellationException`，但这是正常的取消流程，不应该向上传播。
+
+### 10.8 close() — 关闭拷贝器
+
+**源码**：`LocalSnapshotCopier.java:380-390`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ 正常关闭 | cancel() + join() | `LocalSnapshotCopier.java:381-386` |
+| □ catch(InterruptedException e) | Thread.currentThread().interrupt()（**恢复中断标志，不吞掉中断**） | `LocalSnapshotCopier.java:384-386` |
+
+```java
+// LocalSnapshotCopier.java:380-390
+@Override
+public void close() throws IOException {
+    cancel();  // ← 先取消（幂等，即使已完成也安全）
+    try {
+        join();  // ← 等待后台线程真正结束
+    } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();  // ← 恢复中断标志（不吞掉中断）
+    }
+}
+```
+
+📌 **`close()` 的设计意图**：`close()` 实现了 `Closeable` 接口，确保无论拷贝是否完成，调用 `close()` 后后台线程一定已经结束，资源已经释放。`cancel()` 是幂等的，即使拷贝已完成也可以安全调用。
 
 ### 11.1 CopySession 的锁策略
 
