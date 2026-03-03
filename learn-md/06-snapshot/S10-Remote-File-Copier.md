@@ -250,7 +250,10 @@ sequenceDiagram
 
     LSC->>RFC: startCopyToFile(fileName, filePath, null)
     RFC->>CS: new CopySession(rpcService, timerManager, throttle, raftOptions, reqBuilder, endpoint)
-    RFC->>CS: setOutputStream(out) / setDestBuf(buf)
+    RFC->>CS: setOutputStream(out)
+    RFC->>CS: setDestPath(destPath)
+    RFC->>CS: setDestBuf(null)
+    RFC->>CS: setCopyOptions(opts)（opts != null 时）
     RFC->>CS: sendNextRpc()
 
     loop 分块传输循环
@@ -373,6 +376,16 @@ public boolean init(String uri, final SnapshotThrottle snapshotThrottle, final S
 
 **源码**：`RemoteFileCopier.java:100-193`
 
+`startCopyToFile()` 的分支穷举清单（`RemoteFileCopier.java:107-131`）：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ file.exists() && !file.delete() | LOG.error + return null | `RemoteFileCopier.java:112-115` |
+| □ file.exists() && file.delete() 成功 | 继续创建 OutputStream | `RemoteFileCopier.java:112-115` |
+| □ !file.exists() | 直接创建 OutputStream | `RemoteFileCopier.java:117-123` |
+| □ opts != null | session.setCopyOptions(opts) | `RemoteFileCopier.java:124-126` |
+| □ opts == null | 使用默认 CopyOptions（maxRetry=3, retryIntervalMs=1000ms, timeoutMs=10s） | `RemoteFileCopier.java:124-126` |
+
 `startCopyToFile()` 的关键细节（`RemoteFileCopier.java:107-131`）：
 
 ```java
@@ -407,15 +420,52 @@ return session;         // ← 返回 Session，调用方通过 join() 等待完
 
 📌 **设计亮点**：`close()` 中调用 `getFD().sync()` 确保文件数据真正落盘，防止 OS 缓存导致的数据丢失。
 
----
+### 5.3 startCopy2IoBuffer() — 拷贝到内存缓冲
 
-## 6. CopySession 分块传输详解
+**源码**：`RemoteFileCopier.java:175-183`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ opts != null | session.setCopyOptions(opts) | `RemoteFileCopier.java:179-181` |
+| □ opts == null | 使用默认 CopyOptions | `RemoteFileCopier.java:179-181` |
+
+```java
+// RemoteFileCopier.java:175-183
+public Session startCopy2IoBuffer(final String source, final ByteBufferCollector destBuf, final CopyOptions opts) {
+    final CopySession session = newCopySession(source);
+    session.setOutputStream(null);   // ← 明确设置 outputStream=null（内存模式）
+    session.setDestBuf(destBuf);     // ← 设置目标内存缓冲
+    if (opts != null) {
+        session.setCopyOptions(opts);
+    }
+    session.sendNextRpc();
+    return session;
+}
+```
+
+⚠️ **与 `startCopyToFile()` 的关键差异**：
+- `startCopy2IoBuffer()` 设置 `destBuf = ByteBufferCollector`，`outputStream = null`
+- `startCopyToFile()` 设置 `outputStream = FileOutputStream`，`destBuf = null`
+- 在 `sendNextRpc()` 中，`maxCount = destBuf == null ? 128KB : Integer.MAX_VALUE`，所以内存模式一次性请求全部数据（元数据文件很小，通常 < 1KB）
 
 ### 6.1 sendNextRpc() — 发送下一块请求
 
 **源码**：`CopySession.java:276-308`（`sendNextRpc` 方法）
 
 这是整个分块传输的**驱动引擎**，每次调用发送一个 `GetFileRequest`。
+
+**分支穷举清单**（`CopySession.java:276-308`）：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ this.finished == true | 直接 return（不再发送） | `CopySession.java:284` |
+| □ snapshotThrottle != null && throttledByThroughput() == 0 | requestBuilder.setCount(0) + schedule timer + return | `CopySession.java:289-293` |
+| □ snapshotThrottle != null && throttledByThroughput() > 0 | 使用 newMaxCount 发送 RPC | `CopySession.java:287-295` |
+| □ snapshotThrottle == null | 使用原始 maxCount 发送 RPC | `CopySession.java:295-299` |
+| □ destBuf == null（写文件模式） | maxCount = raftOptions.getMaxByteCountPerRpc()（默认 128KB） | `CopySession.java:281` |
+| □ destBuf != null（写内存模式） | maxCount = Integer.MAX_VALUE（一次性全量读取） | `CopySession.java:281` |
 
 ```java
 void sendNextRpc() {
@@ -476,16 +526,17 @@ void sendNextRpc() {
 | 条件 | 结果 | 源码行 |
 |------|------|--------|
 | □ this.finished == true | 直接 return | `CopySession.java:218` |
-| □ !status.isOk() && code == ECANCELED && st.isOk() | setError(ECANCELED) + onFinished() | `CopySession.java:223-227` |
-| □ !status.isOk() && code == ECANCELED && !st.isOk() | 仅 schedule timer 重试（st 已有错误不覆盖） | `CopySession.java:235-236` |
-| □ !status.isOk() && code != EAGAIN && ++retryTimes >= maxRetry && st.isOk() | setError + onFinished() | `CopySession.java:229-233` |
+| □ !status.isOk() && code == ECANCELED && st.isOk() | setError(ECANCELED) + onFinished() + return | `CopySession.java:223-227` |
+| □ !status.isOk() && code == ECANCELED && !st.isOk() | **fall through** 到 retryTimes 检查（ECANCELED != EAGAIN，所以 ++retryTimes） | `CopySession.java:229` |
+| □ !status.isOk() && code != EAGAIN && ++retryTimes >= maxRetry && st.isOk() | setError + onFinished() + return | `CopySession.java:229-233` |
+| □ !status.isOk() && code != EAGAIN && ++retryTimes >= maxRetry && !st.isOk() | **fall through** 到 schedule timer（st 已有错误不覆盖） | `CopySession.java:235-236` |
 | □ !status.isOk() && code != EAGAIN && retryTimes < maxRetry | schedule timer 重试 | `CopySession.java:235-236` |
 | □ !status.isOk() && code == EAGAIN | **不增加** retryTimes，schedule timer 重试 | `CopySession.java:235-236` |
 | □ status.isOk() && response == null | Requires.requireNonNull 抛出 IllegalArgumentException | `CopySession.java:239` |
 | □ status.isOk() && outputStream != null | response.getData().writeTo(outputStream) | `CopySession.java:243-245` |
-| □ catch(IOException) 写文件失败 | setError(EIO) + onFinished() | `CopySession.java:246-250` |
+| □ catch(IOException) 写文件失败 | setError(EIO) + onFinished() + return | `CopySession.java:246-250` |
 | □ status.isOk() && outputStream == null | destBuf.put(response.getData()) | `CopySession.java:252` |
-| □ status.isOk() && response.eof == true | onFinished() → finishLatch.countDown() | `CopySession.java:254-256` |
+| □ status.isOk() && response.eof == true | onFinished() → finishLatch.countDown() + return | `CopySession.java:254-256` |
 | □ status.isOk() && response.eof == false | 更新 count=readSize，lock.unlock()，sendNextRpc() | `CopySession.java:241 + 274` |
 
 ```java
@@ -562,7 +613,7 @@ void onRpcReturned(final Status status, final GetFileResponse response) {
 
 ```java
 private void onFinished() {
-    if (!this.finished) {
+    if (!this.finished) {  // ← 幂等保护：防止重复调用
         if (!this.st.isOk()) {
             LOG.error("Fail to copy data, readerId={} fileName={} offset={} status={}",
                 this.requestBuilder.getReaderId(), this.requestBuilder.getFilename(),
@@ -582,6 +633,8 @@ private void onFinished() {
         this.finished = true;
         this.finishLatch.countDown();  // ← 唤醒 join() 等待的线程
     }
+}
+```
 }
 ```
 
@@ -640,6 +693,10 @@ public void close() throws IOException {
 | 触发时机 | 传输完成/失败/取消时 | 外部调用（`LocalSnapshotCopier.copyFile()` 的 finally 块） |
 
 📌 **设计意图**：`onFinished()` 中 `flip(destBuf)` 是为了让调用方能读取内存中的数据（元数据文件场景）；`close()` 中 `recycle()` 是在调用方读完数据后回收内存池资源。两者不能互换。
+
+---
+
+## 7. FileService（Leader 端）详解
 
 ### 7.1 FileService 的单例设计
 
@@ -761,8 +818,9 @@ public boolean removeReader(final long readerId) {
 | □ fileName == JRAFT_SNAPSHOT_META_FILE | 全量读取元数据，return EOF | `SnapshotFileReader.java:65-70` |
 | □ fileMeta == null | **throw FileNotFoundException** | `SnapshotFileReader.java:72-74` |
 | □ snapshotThrottle != null && throttledByThroughput() == 0 | **throw RetryAgainException** → FileService 返回 EAGAIN | `SnapshotFileReader.java:81-83` |
-| □ snapshotThrottle != null && throttledByThroughput() > 0 | 使用限流后的 newMaxCount 继续读取 | `SnapshotFileReader.java:78-84` |
-| □ snapshotThrottle == null | 使用原始 maxCount 读取 | `SnapshotFileReader.java:86` |
+| □ snapshotThrottle != null && 0 < throttledByThroughput() < maxCount | **部分限流**：使用 newMaxCount 继续读取（本次读取量减少） | `SnapshotFileReader.java:78-84` |
+| □ snapshotThrottle != null && throttledByThroughput() == maxCount | 未限流，使用原始 maxCount 读取 | `SnapshotFileReader.java:78-84` |
+| □ snapshotThrottle == null | 不限流，使用原始 maxCount 读取 | `SnapshotFileReader.java:86` |
 
 ```java
 @Override
@@ -938,6 +996,9 @@ private void internalCopy() throws IOException, InterruptedException {
         final Set<String> files = this.remoteSnapshot.listFiles();
         for (final String file : files) {
             copyFile(file); // 第三步：逐个拷贝数据文件
+            // ⚠️ 注意：for 循环不检查 isOk()！
+            // 即使某个文件拷贝失败，也会继续尝试其他文件
+            // 最终在 do-while 结束后统一处理错误状态
         }
     } while (false);
     // 清理 writer
@@ -954,13 +1015,228 @@ private void internalCopy() throws IOException, InterruptedException {
 }
 ```
 
-### 10.2 filterBeforeCopyRemote 优化
+### 10.2 loadMetaTable() — 拷贝元数据文件
+
+**源码**：`LocalSnapshotCopier.java:177-225`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ this.cancelled == true | setError(ECANCELED) + return | `LocalSnapshotCopier.java:183-186` |
+| □ session.status() 不 OK && isOk() | setError + return | `LocalSnapshotCopier.java:198-201` |
+| □ loadFromIoBufferAsRemote() 返回 false | setError(-1, "Bad meta_table format") + return | `LocalSnapshotCopier.java:202-205` |
+| □ !metaTable.hasMeta() | Requires.requireTrue 抛出 IllegalArgumentException | `LocalSnapshotCopier.java:206-207` |
+| □ 全部成功 | remoteSnapshot 元数据加载完成 | `LocalSnapshotCopier.java:209` |
+| □ finally | Utils.closeQuietly(session)（无论成功失败都关闭 session） | `LocalSnapshotCopier.java:222-224` |
+
+```java
+// LocalSnapshotCopier.java:177-225（核心逻辑）
+private void loadMetaTable() throws InterruptedException {
+    final ByteBufferCollector metaBuf = ByteBufferCollector.allocate(0);
+    Session session = null;
+    try {
+        this.lock.lock();
+        try {
+            if (this.cancelled) {
+                if (isOk()) { setError(RaftError.ECANCELED, "ECANCELED"); }
+                return;
+            }
+            // 使用 startCopy2IoBuffer 拷贝元数据到内存
+            session = this.copier.startCopy2IoBuffer(Snapshot.JRAFT_SNAPSHOT_META_FILE, metaBuf, null);
+            this.curSession = session;
+        } finally {
+            this.lock.unlock();
+        }
+        session.join(); // join out of lock（锁外等待，避免 cancel() 死锁）
+        this.lock.lock();
+        try {
+            this.curSession = null;
+        } finally {
+            this.lock.unlock();
+        }
+        if (!session.status().isOk() && isOk()) {
+            LOG.warn("Fail to copy meta file: {}", session.status());
+            setError(session.status().getCode(), session.status().getErrorMsg());
+            return;
+        }
+        if (!this.remoteSnapshot.getMetaTable().loadFromIoBufferAsRemote(metaBuf.getBuffer())) {
+            LOG.warn("Bad meta_table format");
+            setError(-1, "Bad meta_table format from remote");
+            return;
+        }
+        Requires.requireTrue(this.remoteSnapshot.getMetaTable().hasMeta(), "Invalid remote snapshot meta:%s",
+            this.remoteSnapshot.getMetaTable().getMeta());
+    } finally {
+        if (session != null) {
+            Utils.closeQuietly(session); // ← 无论成功失败都关闭 session，触发 close() 回收资源
+        }
+    }
+}
+```
+
+### 10.3 copyFile() — 拷贝单个数据文件
+
+**源码**：`LocalSnapshotCopier.java:109-175`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ writer.getFileMeta(fileName) != null | LOG.info("Skipped") + return（文件已存在，跳过） | `LocalSnapshotCopier.java:110-112` |
+| □ !checkFile(fileName) | return（路径安全检查失败） | `LocalSnapshotCopier.java:113-115` |
+| □ 父目录不存在 && !parentDir.mkdirs() | LOG.error + setError(EIO) + return | `LocalSnapshotCopier.java:120-124` |
+| □ this.cancelled == true | setError(ECANCELED) + return | `LocalSnapshotCopier.java:130-133` |
+| □ startCopyToFile() 返回 null | LOG.error + setError(-1) + return | `LocalSnapshotCopier.java:133-137` |
+| □ session.status() 不 OK && isOk() | setError + return | `LocalSnapshotCopier.java:148-151` |
+| □ !writer.addFile(fileName, meta) | setError(EIO) + return | `LocalSnapshotCopier.java:152-155` |
+| □ !writer.sync() | setError(EIO) | `LocalSnapshotCopier.java:156-158` |
+| □ 全部成功 | 文件拷贝完成，已写入 writer | `LocalSnapshotCopier.java:152-158` |
+| □ finally | Utils.closeQuietly(session)（无论成功失败都关闭 session） | `LocalSnapshotCopier.java:172-174` |
+
+```java
+// LocalSnapshotCopier.java:109-175（核心逻辑）
+void copyFile(final String fileName) throws IOException, InterruptedException {
+    // 1. 跳过已有文件
+    if (this.writer.getFileMeta(fileName) != null) {
+        LOG.info("Skipped downloading {}", fileName);
+        return;
+    }
+    // 2. 路径安全检查（防止路径穿越攻击）
+    if (!checkFile(fileName)) { return; }
+    // 3. 创建父目录
+    final String filePath = this.writer.getPath() + File.separator + fileName;
+    final Path subPath = Paths.get(filePath);
+    if (!subPath.equals(subPath.getParent()) && !subPath.getParent().getFileName().toString().equals(".")) {
+        final File parentDir = subPath.getParent().toFile();
+        if (!parentDir.exists() && !parentDir.mkdirs()) {
+            LOG.error("Fail to create directory for {}", filePath);
+            setError(RaftError.EIO, "Fail to create directory");
+            return;
+        }
+    }
+    Session session = null;
+    try {
+        this.lock.lock();
+        try {
+            if (this.cancelled) {
+                if (isOk()) { setError(RaftError.ECANCELED, "ECANCELED"); }
+                return;
+            }
+            // 4. 启动文件拷贝 session
+            session = this.copier.startCopyToFile(fileName, filePath, null);
+            if (session == null) {
+                LOG.error("Fail to copy {}", fileName);
+                setError(-1, "Fail to copy %s", fileName);
+                return;
+            }
+            this.curSession = session;
+        } finally {
+            this.lock.unlock();
+        }
+        session.join(); // join out of lock（锁外等待）
+        this.lock.lock();
+        try {
+            this.curSession = null;
+        } finally {
+            this.lock.unlock();
+        }
+        // 5. 检查拷贝结果
+        if (!session.status().isOk() && isOk()) {
+            setError(session.status().getCode(), session.status().getErrorMsg());
+            return;
+        }
+        // 6. 注册到 writer
+        if (!this.writer.addFile(fileName, meta)) {
+            setError(RaftError.EIO, "Fail to add file to writer");
+            return;
+        }
+        // 7. 持久化 writer 元数据
+        if (!this.writer.sync()) {
+            setError(RaftError.EIO, "Fail to sync writer");
+        }
+    } finally {
+        if (session != null) {
+            Utils.closeQuietly(session); // ← 无论成功失败都关闭 session
+        }
+    }
+}
+```
+
+### 10.4 filter() — 创建 writer 并执行过滤
+
+**源码**：`LocalSnapshotCopier.java:340-370`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ storage.create() 返回 null | setError(EIO) + return | `LocalSnapshotCopier.java:342-344` |
+| □ filterBeforeCopyRemote == true && filterBeforeCopy() 返回 false | writer.setError + closeQuietly + create(true)（重新创建空 writer） | `LocalSnapshotCopier.java:346-350` |
+| □ filterBeforeCopyRemote == true && 重新 create() 返回 null | setError(EIO) + return | `LocalSnapshotCopier.java:352-354` |
+| □ filterBeforeCopyRemote == false | 直接创建空 writer（`create(true)` 表示清空已有内容） | `LocalSnapshotCopier.java:341` |
+| □ !writer.sync() | LOG.error + setError(EIO) | `LocalSnapshotCopier.java:356-359` |
+
+```java
+// LocalSnapshotCopier.java:340-370
+private void filter() throws IOException {
+    // filterBeforeCopyRemote=true 时：create(false) 保留已有文件，用于 checksum 对比
+    // filterBeforeCopyRemote=false 时：create(true) 清空已有文件，全量重新拷贝
+    this.writer = (LocalSnapshotWriter) this.storage.create(!this.filterBeforeCopyRemote);
+    if (this.writer == null) {
+        setError(RaftError.EIO, "Fail to create snapshot writer");
+        return;
+    }
+    if (this.filterBeforeCopyRemote) {
+        final SnapshotReader reader = this.storage.open();
+        if (!filterBeforeCopy(this.writer, reader)) {
+            LOG.warn("Fail to filter writer before copying, destroy and create a new writer.");
+            this.writer.setError(-1, "Fail to filter");
+            Utils.closeQuietly(this.writer);
+            this.writer = (LocalSnapshotWriter) this.storage.create(true); // 降级：全量重新拷贝
+        }
+        if (reader != null) {
+            Utils.closeQuietly(reader);
+        }
+        if (this.writer == null) {
+            setError(RaftError.EIO, "Fail to create snapshot writer");
+            return;
+        }
+    }
+    this.writer.saveMeta(this.remoteSnapshot.getMetaTable().getMeta());
+    if (!this.writer.sync()) {
+        LOG.error("Fail to sync snapshot writer path={}", this.writer.getPath());
+        setError(RaftError.EIO, "Fail to sync snapshot writer");
+    }
+}
+```
+
+### 10.5 filterBeforeCopyRemote 优化
 
 **源码**：`LocalSnapshotCopier.java:196-262`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|--------|
+| □ 本地文件在远端不存在（remoteSnapshot.getFileMeta(file) == null） | toRemove + writer.removeFile | `LocalSnapshotCopier.java:200-203` |
+| □ remoteMeta.hasChecksum() == false | writer.removeFile + toRemove + continue（强制重新下载） | `LocalSnapshotCopier.java:210-214` |
+| □ localMeta != null && checksum 相同 | continue（保留本地文件，无需下载） | `LocalSnapshotCopier.java:216-218` |
+| □ localMeta != null && checksum 不同 | writer.removeFile + toRemove（标记重新下载） | `LocalSnapshotCopier.java:220-222` |
+| □ lastSnapshot == null | continue（无上一个快照可复用） | `LocalSnapshotCopier.java:225-226` |
+| □ lastSnapshot.getFileMeta(fileName) == null | continue（上一个快照中也没有此文件） | `LocalSnapshotCopier.java:228-229` |
+| □ lastSnapshot 中 checksum 不匹配 | continue（上一个快照的文件也不能复用） | `LocalSnapshotCopier.java:231-232` |
+| □ localMeta.getSource() == FILE_SOURCE_LOCAL | Files.createLink()（硬链接复用，无需网络传输） | `LocalSnapshotCopier.java:237-243` |
+| □ catch(IOException) 创建硬链接失败 | LOG.error + continue（**不是 return！** 降级为重新下载） | `LocalSnapshotCopier.java:241-243` |
+| □ toRemove.peekLast().equals(fileName) | toRemove.pollLast()（硬链接成功，从删除列表移除） | `LocalSnapshotCopier.java:244-246` |
+| □ !writer.sync() | LOG.error + return false | `LocalSnapshotCopier.java:252-254` |
 
 当 `filterBeforeCopyRemote=true` 时，在拷贝前先对比本地已有快照和远端快照的 checksum：
 - **checksum 相同**：直接硬链接（`Files.createLink()`），无需网络传输
 - **checksum 不同**：标记为需要重新下载
+- **硬链接失败**：`catch(IOException)` 后 **continue**（不是 return！），降级为重新从网络下载
+
+⚠️ **关键细节**：`catch(IOException)` 时是 `continue` 而不是 `return false`，这意味着硬链接失败不会中止整个过滤流程，该文件会被重新从远端下载。
 
 这是一个**增量快照传输**优化，避免重复传输未变化的文件。
 
