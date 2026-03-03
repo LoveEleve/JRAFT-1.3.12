@@ -342,7 +342,7 @@ public void start() {
 public void run() {
     // 1. 初始化 startTime
     startTime = System.nanoTime();
-    if (startTime == 0) startTime = 1;  // ← 0 是"未初始化"标志，不能用 0
+    if (startTime == 0) startTime = 1;  // ← 0 是“未初始化”标志，不能用 0
 
     // 2. 通知 start() 等待的线程
     startTimeInitialized.countDown();
@@ -356,7 +356,7 @@ public void run() {
             HashedWheelBucket bucket = wheel[idx];
             transferTimeoutsToBuckets();           // ← 从队列分配任务到 bucket
             bucket.expireTimeouts(deadline);       // ← 触发到期任务
-            tick++;
+            tick++;                                // ← 推进指针
         }
     } while (workerStateUpdater.get(HashedWheelTimer.this) == WORKER_STATE_STARTED);
 
@@ -615,14 +615,41 @@ public void expire() {
 | 条件 | 结果 | 源码行 |
 |------|------|-----|
 | □ Thread.currentThread() == workerThread | throw IllegalStateException（防止死锁） | `HashedWheelTimer.java:295-297` |
-| □ CAS(STARTED → SHUTDOWN) 失败 → getAndSet != SHUTDOWN | instanceCounter.decrementAndGet() | `HashedWheelTimer.java:300-302` |
+| □ CAS(STARTED → SHUTDOWN) 失败 → getAndSet != SHUTDOWN | instanceCounter.decrementAndGet() + return emptySet | `HashedWheelTimer.java:300-302` |
 | □ CAS(STARTED → SHUTDOWN) 失败 → getAndSet == SHUTDOWN | 已经 shutdown，return emptySet | `HashedWheelTimer.java:300-305` |
 | □ CAS(STARTED → SHUTDOWN) 成功 → while(isAlive) | workerThread.interrupt() + join(100) | `HashedWheelTimer.java:310-317` |
 | □ catch(InterruptedException) | interrupted = true | `HashedWheelTimer.java:315-317` |
 | □ if(interrupted) | Thread.currentThread().interrupt()（恢复中断标志） | `HashedWheelTimer.java:320-322` |
 | □ finally | instanceCounter.decrementAndGet() | `HashedWheelTimer.java:323-325` |
+| □ CAS 成功路径最终 | return worker.unprocessedTimeouts()（返回所有未执行的任务） | `HashedWheelTimer.java:327` |
 
-### 4.14 HashedWheelBucket.remove() 逐行分析
+### 4.14 HashedWheelBucket.addTimeout() 逐行分析
+
+**源码**：`HashedWheelTimer.java:660-670`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ head == null | head = tail = timeout（链表为空，直接设为头尾） | `HashedWheelTimer.java:664-665` |
+| □ head != null | tail.next = timeout; timeout.prev = tail; tail = timeout（追加到尾部） | `HashedWheelTimer.java:666-669` |
+
+```java
+// HashedWheelTimer.java:660-670（addTimeout）
+public void addTimeout(HashedWheelTimeout timeout) {
+    assert timeout.bucket == null;
+    timeout.bucket = this;  // ← 设置 bucket 反向引用（用于 remove 时直接操作）
+    if (head == null) {
+        head = tail = timeout;  // ← 链表为空
+    } else {
+        tail.next = timeout;    // ← 追加到尾部
+        timeout.prev = tail;
+        tail = timeout;
+    }
+}
+```
+
+### 4.15 HashedWheelBucket.remove() 逐行分析
 
 **源码**：`HashedWheelTimer.java:693-720`
 
@@ -892,16 +919,16 @@ public void stop() {
 
 | 条件 | 结果 | 源码行 |
 |------|------|-----|
-| □ this.destroyed == true | return（幂等） | `RepeatedTimer.java:228-230` |
+| □ this.destroyed == true | return（幂等，但 finally 仍然执行！） | `RepeatedTimer.java:228-230` |
 | □ this.destroyed = true | 设置销毁标志 | `RepeatedTimer.java:231` |
 | □ !this.running | invokeDestroyed = true | `RepeatedTimer.java:232-234` |
-| □ this.stopped | return（已停止，不需要取消 timeout） | `RepeatedTimer.java:235-237` |
+| □ this.stopped | return（已停止，不需要取消 timeout，但 finally 仍然执行！） | `RepeatedTimer.java:235-237` |
 | □ this.stopped = true | 设置停止标志 | `RepeatedTimer.java:238` |
 | □ this.timeout != null && cancel() 成功 | invokeDestroyed=true; running=false | `RepeatedTimer.java:239-242` |
 | □ this.timeout = null（无论 cancel 是否成功） | 清空 timeout 引用 | `RepeatedTimer.java:243` |
-| □ finally: lock.unlock() | 释放锁 | `RepeatedTimer.java:245` |
-| □ finally: timer.stop() | 停止底层定时器（共享模式下引用计数-1） | `RepeatedTimer.java:246` |
-| □ finally: if(invokeDestroyed) onDestroy() | 在锁外调用，避免死锁 | `RepeatedTimer.java:247-249` |
+| □ finally: lock.unlock() | 释放锁（无论 try 块如何退出，包括 return，都会执行） | `RepeatedTimer.java:245` |
+| □ finally: timer.stop() | 停止底层定时器（无论 try 块如何退出，包括 return，都会执行） | `RepeatedTimer.java:246` |
+| □ finally: if(invokeDestroyed) onDestroy() | 在锁外调用，避免死锁（无论 try 块如何退出，包括 return，都会执行） | `RepeatedTimer.java:247-249` |
 
 ```java
 // RepeatedTimer.java:225-257（destroy）
@@ -938,6 +965,73 @@ public void destroy() {
 ```
 
 ⚠️ **`destroy()` 的延迟销毁机制**：如果 `invoking == true`（正在执行 `onTrigger()`），`destroy()` 不会立即调用 `onDestroy()`，而是设置 `destroyed = true`，等 `run()` 执行完后检测到 `destroyed` 标志，再调用 `onDestroy()`。这避免了在 `onTrigger()` 执行期间销毁定时器导致的并发问题。
+
+⚠️ **`destroy()` 中 `return` 不会跳过 `finally` 块**：`try` 块内的两处 `return`（`if (destroyed) return` 和 `if (stopped) return`）只是跳出 `try` 块，`finally` 块中的 `lock.unlock()`、`timer.stop()`、`onDestroy()` **仍然会执行**。这意味着：即使 `stopped == true` 提前 return，`timer.stop()` 也会被调用（引用计数 -1）。
+
+### 5.10 runOnceNow() 逐行分析
+
+**源码**：`RepeatedTimer.java:109-117`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ timeout != null && cancel() 成功 | timeout=null; run()（立即触发一次） | `RepeatedTimer.java:112-114` |
+| □ timeout == null 或 cancel() 失败 | 不做任何事 | `RepeatedTimer.java:112` |
+| □ finally { lock.unlock() } | 释放锁 | `RepeatedTimer.java:115-117` |
+
+```java
+// RepeatedTimer.java:109-117（runOnceNow）
+public void runOnceNow() {
+    this.lock.lock();
+    try {
+        if (this.timeout != null && this.timeout.cancel()) {
+            this.timeout = null;
+            run();  // ← 立即触发一次（在锁内调用 run()，注意 run() 内部也会加锁！）
+        }
+    } finally {
+        this.lock.unlock();
+    }
+}
+```
+
+⚠️ **`runOnceNow()` 在锁内调用 `run()`**：`run()` 内部会再次调用 `this.lock.lock()`。由于使用的是 `ReentrantLock`（可重入锁），同一线程可以多次获取锁，不会死锁。但需要注意：`run()` 内部的 `schedule()` 会调用 `timer.newTimeout()`，这是在锁内调用外部方法，需要确保不会产生锁顺序问题。
+
+### 5.11 reset(int) 逐行分析
+
+**源码**：`RepeatedTimer.java:195-210`
+
+**分支穷举清单**：
+
+| 条件 | 结果 | 源码行 |
+|------|------|-----|
+| □ stopped == true | return（不重新调度） | `RepeatedTimer.java:199-201` |
+| □ running == true | schedule()（重新调度，使用新的 timeoutMs） | `RepeatedTimer.java:202-204` |
+| □ running == false | 不做任何事（等下次触发时自然使用新值） | `RepeatedTimer.java:202` |
+| □ finally { lock.unlock() } | 释放锁 | `RepeatedTimer.java:205-207` |
+
+```java
+// RepeatedTimer.java:195-210（reset）
+public void reset(final int timeoutMs) {
+    this.lock.lock();
+    this.timeoutMs = timeoutMs;  // ← 先更新 timeoutMs（在锁内更新，但 volatile 保证可见性）
+    try {
+        if (this.stopped) {
+            return;  // ← 已停止，不重新调度
+        }
+        if (this.running) {
+            schedule();  // ← 重新调度，使用新的 timeoutMs
+        }
+        // running == false：任务正在执行中，等 run() 完成后自然使用新的 timeoutMs
+    } finally {
+        this.lock.unlock();
+    }
+}
+```
+
+📌 **`reset()` vs `restart()` 的差异**：
+- `reset(timeoutMs)`：更新超时时间，如果 running 则重新调度；不改变 stopped 状态
+- `restart()`：强制重新调度，不更新超时时间；会将 stopped 设为 false
 
 ---
 
