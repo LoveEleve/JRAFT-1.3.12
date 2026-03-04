@@ -1,5 +1,17 @@
 # 09 - 成员变更（Membership Change）
 
+## ☕ 想先用人话了解成员变更？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊成员变更（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版从"脑裂的噩梦"讲起，用"换董事会"的比喻带你理解 Joint Consensus、两阶段配置变更、Learner 机制和 ConfigurationCtx 状态机。**建议先读通俗解读版。**
+
+还有一个小问题：新加入的节点日志是空的，如果直接让它参与投票，它会拖慢整个集群（因为要等它追上日志）。JRaft 的做法是先让新节点以 **Learner（学习者）** 身份加入——只接收日志、不参与投票。等它追上了 Leader 的进度，再正式"转正"为投票成员。就像新员工入职先有个"试用期"，通过了才有表决权。
+
+好，记住核心：**不能直接切配置（会脑裂）→ 用联合共识做过渡 → 新节点先当 Learner 再转正**。下面来看代码 👇
+
+---
+
 ## 1. 解决什么问题
 
 集群在运行过程中需要动态调整成员：扩容（加节点）、缩容（删节点）、替换故障节点、添加只读副本（Learner）。  
@@ -516,3 +528,70 @@ public Status learner2Follower(final String groupId, final Configuration conf, f
 5. **`RouteTable` 缓存过期**：客户端的 `RouteTable` 缓存了 Leader 信息，成员变更后 Leader 可能转移，需要调用 `refreshLeader()` 刷新，否则请求会发到旧 Leader 并收到重定向响应。
 
 6. **`resetPeer` 的数据风险**：在多数节点宕机时使用 `resetPeer` 强制恢复，如果宕机节点上有未提交的日志，恢复后可能出现日志回滚，导致已"提交"（从客户端视角）的数据丢失。
+
+---
+
+## 11. 成员变更模块数据结构关系图
+
+```mermaid
+classDiagram
+    class NodeImpl {
+        -ConfigurationCtx confCtx
+        -Configuration conf
+        -ReplicatorGroup replicatorGroup
+        +addPeer(peer, done) void
+        +removePeer(peer, done) void
+        +changePeers(newConf, done) void
+        +addLearners(learners, done) void
+        +resetPeers(newConf) Status
+    }
+
+    class ConfigurationCtx {
+        -Stage stage
+        -int version
+        -List~PeerId~ newPeers
+        -List~PeerId~ oldPeers
+        -List~PeerId~ addingPeers
+        -List~PeerId~ newLearners
+        -List~PeerId~ oldLearners
+        -int nchanges
+        -Closure done
+        +start(oldConf, newConf, done) void
+        +flush(conf, oldConf) void
+        +nextStage() void
+        +reset(status) void
+        +isBusy() boolean
+    }
+
+    class Stage {
+        <<enumeration>>
+        STAGE_NONE
+        STAGE_CATCHING_UP
+        STAGE_JOINT
+        STAGE_STABLE
+    }
+
+    class Configuration {
+        -List~PeerId~ peers
+        -List~PeerId~ learners
+        +listPeers() List
+        +listLearners() List
+        +addPeer(peer) boolean
+        +removePeer(peer) boolean
+        +contains(peer) boolean
+    }
+
+    class Ballot {
+        -int quorum
+        -int oldQuorum
+        +init(peers, oldPeers) boolean
+        +grant(peer) void
+        +isGranted() boolean
+    }
+
+    NodeImpl --> ConfigurationCtx : confCtx
+    NodeImpl --> Configuration : conf (当前配置)
+    ConfigurationCtx --> Stage : stage
+    ConfigurationCtx --> Configuration : 新旧配置
+    Ballot --> Configuration : 双 quorum 计票
+```

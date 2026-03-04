@@ -1,5 +1,13 @@
 # 05 - 日志存储：深度精读
 
+## ☕ 想先用人话了解日志存储？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊日志存储（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版从"为什么选 RocksDB"开始，用图书馆的比喻带你理解两个 Column Family、WriteBatch 原子写入、truncatePrefix 的崩溃安全设计、V1/V2 编码格式、以及大 Value 的 Segment 文件优化。**如果你觉得直接看 RocksDB 字段分析太枯燥，建议先读通俗解读版。**
+
+---
+
 ## 学习目标
 
 深入理解 JRaft 的日志存储层设计，包括 `RocksDBLogStorage`（默认存储实现）、日志编解码机制（V1/V2）、`LocalRaftMetaStorage`（元数据存储），以及 `RocksDBSegmentLogStorage`（大日志优化）的模板方法设计。

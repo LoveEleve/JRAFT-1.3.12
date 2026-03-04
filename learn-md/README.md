@@ -1,83 +1,62 @@
-# JRaft 源码学习路线图
+# JRaft 源码学习总导航（精炼版 + 通俗版）
 
-> 基于 SOFAJRaft 源码（`jraft-core` + `jraft-rheakv`），系统性学习 Raft 协议工程实现。
+> 基于 SOFAJRaft 源码（`jraft-core` + `jraft-rheakv`）的系统化学习路线。
+> 
+> 你可以按两种方式阅读：
+> - **源码精炼版**：每章的 `README.md`（或章节主文档）
+> - **通俗解读版**：每章的 `通俗解读.md`（讲故事 + 打比喻）
 
-## 学习主题目录
+## 学习主题目录（15章）
 
-| 序号 | 主题 | 核心类 | 难度 |
+| 序号 | 主题 | 源码精炼版 | 通俗解读版 |
 |---|---|---|---|
-| [01](./01-overview/README.md) | **整体架构概览** | `Node`, `RaftGroupService`, `JRaftServiceFactory` | ⭐⭐ |
-| [02](./02-node-lifecycle/README.md) | **Node 生命周期与启动流程** | `NodeImpl.init()`, `State`, `RepeatedTimer` | ⭐⭐⭐ |
-| [03](./03-leader-election/README.md) | **Leader 选举** | `preVote`, `electSelf`, `Ballot` | ⭐⭐⭐⭐ |
-| [04](./04-log-replication/README.md) | **日志复制** | `Replicator`, `BallotBox`, `AppendEntries` | ⭐⭐⭐⭐⭐ |
-| [05](./05-log-storage/README.md) | **日志存储** | `LogManagerImpl`, `RocksDBLogStorage`, `SegmentFile` | ⭐⭐⭐⭐ |
-| [06](./06-snapshot/README.md) | **快照机制** | `SnapshotExecutorImpl`, `LocalSnapshotCopier`, `FileService` | ⭐⭐⭐⭐ |
-| [07](./07-state-machine/README.md) | **状态机与 FSMCaller** | `FSMCallerImpl`, `StateMachine`, `Iterator` | ⭐⭐⭐ |
-| [08](./08-read-index/README.md) | **线性一致读（ReadIndex）** | `ReadOnlyServiceImpl`, `ReadIndexClosure` | ⭐⭐⭐ |
-| [09](./09-membership-change/README.md) | **成员变更** | `CliServiceImpl`, `Configuration`, `RouteTable` | ⭐⭐⭐ |
-| [10](./10-rpc-layer/README.md) | **RPC 通信层** | `BoltRpcServer`, `AppendEntriesRequestProcessor` | ⭐⭐⭐ |
-| [11](./11-disruptor-pipeline/README.md) | **Disruptor 与并发基础设施** | `DisruptorBuilder`, `MpscSingleThreadExecutor`, `RepeatedTimer` | ⭐⭐⭐⭐ |
-| [12](./12-rheakv/README.md) | **RheaKV 分布式 KV 存储** | `StoreEngine`, `RegionEngine`, `KVStoreStateMachine` | ⭐⭐⭐⭐⭐ |
+| 01 | 整体架构概览 | [README](./01-overview/README.md) | [通俗解读](./01-overview/通俗解读.md) |
+| 02 | Node 生命周期与启动流程 | [README](./02-node-lifecycle/README.md) | [通俗解读](./02-node-lifecycle/通俗解读.md) |
+| 03 | Leader 选举 | [README](./03-leader-election/README.md) | [通俗解读](./03-leader-election/通俗解读.md) |
+| 04 | 日志复制 | [README](./04-log-replication/README.md) | [通俗解读](./04-log-replication/通俗解读.md) |
+| 05 | 日志存储 | [README](./05-log-storage/README.md) | [通俗解读](./05-log-storage/通俗解读.md) |
+| 06 | 快照机制 | [README](./06-snapshot/README.md) | [通俗解读](./06-snapshot/通俗解读.md) |
+| 07 | 状态机与 FSMCaller | [README](./07-state-machine/README.md) | [通俗解读](./07-state-machine/通俗解读.md) |
+| 08 | 线性一致读（ReadIndex） | [README](./08-read-index/README.md) | [通俗解读](./08-read-index/通俗解读.md) |
+| 09 | 成员变更 | [README](./09-membership-change/README.md) | [通俗解读](./09-membership-change/通俗解读.md) |
+| 10 | RPC 通信层 | [README](./10-rpc-layer/README.md) | [通俗解读](./10-rpc-layer/通俗解读.md) |
+| 11 | 并发基础设施 | [README](./11-concurrency-infra/README.md) | [通俗解读](./11-concurrency-infra/通俗解读.md) |
+| 12 | 监控与可观测性 | [README](./12-metrics-observability/README.md) | [通俗解读](./12-metrics-observability/通俗解读.md) |
+| 13 | RheaKV 进阶 | [README](./13-rheakv-advanced/README.md) | [通俗解读](./13-rheakv-advanced/通俗解读.md) |
+| 14 | RheaKV Placement Driver | [S7-Placement-Driver](./14-rheakv-pd/S7-Placement-Driver.md) | [通俗解读](./14-rheakv-pd/通俗解读.md) |
+| 15 | Raft 论文 vs JRaft 实现 | [Raft-Paper-vs-JRaft](./15-raft-paper-vs-jraft/Raft-Paper-vs-JRaft.md) | [通俗解读](./15-raft-paper-vs-jraft/通俗解读.md) |
 
 ## 推荐学习顺序
 
-```
-第一阶段：建立全局视图
-  01（架构概览）→ 02（节点生命周期）→ 07（状态机）
+### 路线A：零基础/第一次读
 
-第二阶段：核心协议
-  03（Leader 选举）→ 04（日志复制）→ 08（线性一致读）
+`01` → `02` → `03` → `04` → `05` → `06` → `07` → `08` → `09` → `10` → `11` → `12` → `13` → `14` → `15`
 
-第三阶段：存储与快照
-  05（日志存储）→ 06（快照机制）
+建议每章都按这个节奏：
+1. **先读通俗解读版**（先建立直觉）
+2. **再读源码精炼版**（进入源码细节）
 
-第四阶段：工程细节
-  10（RPC 层）→ 11（Disruptor 并发）→ 09（成员变更）
+### 路线B：带着问题查阅
 
-第五阶段：综合应用
-  12（RheaKV）
-```
+- 想搞懂选举稳定性：`03`
+- 想搞懂写入性能瓶颈：`04` + `05` + `11`
+- 想搞懂读一致性：`08`
+- 想搞懂扩缩容与运维：`09` + `12`
+- 想搞懂 RheaKV 全貌：`13` + `14`
+- 想搞懂“论文到工程”的差异：`15`
 
-## 核心数据流
+## 阅读建议（统一规则）
 
-```
-Client.apply(Task)
-  │
-  ▼ [NodeImpl]
-  写入 LogManager（Disruptor 异步）
-  │
-  ▼ [Replicator × N]
-  Pipeline 复制给所有 Follower
-  │
-  ▼ [BallotBox]
-  Quorum 达成 → committedIndex 推进
-  │
-  ▼ [FSMCaller]
-  Disruptor 异步驱动状态机
-  │
-  ▼ [StateMachine.onApply()]
-  用户业务逻辑 + Closure 回调客户端
-```
+- **先问题后源码**：每次先明确“我要回答什么问题”
+- **先数据结构后算法流程**：字段含义、生命周期、值域先看清
+- **异常路径必读**：`catch`、降级分支、超时处理通常最关键
+- **关注并发边界**：锁范围、线程切换、回调在哪个线程执行
+- **再做运行验证**：必要时用日志/断点验证关键结论
 
-## 关键源码文件大小参考
+## 核心一句话
 
-| 文件 | 大小 | 说明 |
-|---|---|---|
-| `NodeImpl.java` | 145 KB | 节点核心，最复杂的类 |
-| `Replicator.java` | 73 KB | 日志复制核心 |
-| `FSMCallerImpl.java` | 28 KB | 状态机调用器 |
-| `LogManagerImpl.java` | 46 KB | 日志管理器 |
-| `SnapshotExecutorImpl.java` | 30 KB | 快照执行器 |
-| `ReadOnlyServiceImpl.java` | 19 KB | 线性一致读 |
-| `DefaultRheaKVStore.java` | 93 KB | RheaKV 客户端 |
-| `RocksRawKVStore.java` | 73 KB | RocksDB KV 存储 |
+这套内容已经形成完整闭环：
+- **精炼版**负责“严谨、可定位、可追源码”
+- **通俗版**负责“直觉、故事化、降低认知门槛”
 
-## 阅读技巧
-
-遵循 [[memory:592bhmre]] 中的源码阅读规则：
-
-1. **数据结构优先**：先看字段（特别是 `volatile`/`final`），再看方法
-2. **问题导向**：每次阅读前明确问题，读完后用自己的话回答
-3. **异常路径必读** ⭐：每个 `catch` 块都要看，生产故障 90% 在异常路径
-4. **父类构造链必查** ⭐：`NodeImpl` 实现了哪些接口？各接口的 `init()` 语义？
-5. **Debug 验证**：对执行路径有疑问必须 Debug，不能靠猜
+建议优先“通俗版入门”，再“精炼版吃透”。

@@ -1,5 +1,13 @@
 # 07 - 状态机（StateMachine）与 FSMCaller：深度精读
 
+## ☕ 想先用人话了解状态机？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊状态机（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用"饭店后厨"的比喻，带你理解 FSMCaller 为什么是传菜窗口、Disruptor 批量合并怎么把 5 次通知变成 1 次执行、Iterator 的使用陷阱、以及 onApply 抛异常后的隐藏行为。**建议先读通俗解读版。**
+
+---
+
 ## 学习目标
 
 深入理解 JRaft 的状态机驱动机制，包括 `FSMCallerImpl` 的 Disruptor 异步架构、批量提交的合并策略、`IteratorImpl` 的日志迭代设计、`ClosureQueueImpl` 的回调队列，以及错误处理的完整路径。

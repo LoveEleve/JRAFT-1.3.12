@@ -1,5 +1,13 @@
 # 10 - RPC 通信层
 
+## ☕ 想先用人话了解 RPC 层？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊 RPC 通信层（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用"电话系统"的比喻，带你理解 Pipeline 有序响应、SPI 可插拔设计、线程隔离、AppendEntries 特殊优化和连接管理。**建议先读通俗解读版。**
+
+---
+
 ## 1. 解决什么问题
 
 Raft 是一个分布式共识协议，节点之间需要频繁通信：Leader 向 Follower 复制日志（AppendEntries）、节点之间互相投票（RequestVote）、Leader 向落后节点安装快照（InstallSnapshot）……这些通信有几个核心需求：

@@ -1,5 +1,13 @@
 # 11 - Disruptor 与并发基础设施
 
+## ☕ 想先用人话了解并发基础设施？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊并发基础设施（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用"寿司旋转传送带"等比喻，带你理解 Disruptor、HashedWheelTimer、SegmentList、NonReentrantLock 等 JRaft 性能秘密武器的设计原理。**建议先读通俗解读版。**
+
+---
+
 ## 1. 解决什么问题
 
 JRaft 作为高性能 Raft 实现，其内部大量使用自定义并发工具来优化关键路径的吞吐量和延迟。本章分析 12 个核心并发基础设施组件：
@@ -696,3 +704,80 @@ flowchart TD
 5. **`Recyclers` 在线程池场景下的内存泄漏**：ThreadLocal Stack 绑定到线程，如果线程池的线程不被销毁，Stack 中的对象也不会被回收。建议设置合理的 `maxCapacityPerThread`（默认 4096），或在线程退出时手动清理
 6. **`LongHeldDetectingReadWriteLock` 的 `report()` 被频繁调用**：如果 `maxBlockingTimeToReport` 设置过小，正常的锁竞争也会触发告警，导致日志洪水。建议设置为 1 秒以上
 7. **`SegmentList` 的 `estimatedBytes` 不精确**：它只统计元素本身的 `estimatedSize()`，不包含 Segment 数组的开销（每个 Segment 约 1KB = 128 × 8 bytes 引用）。在极端场景下，实际内存可能比 `estimatedBytes` 大 10-20%
+
+---
+
+## 8. 并发基础设施数据结构关系图
+
+```mermaid
+classDiagram
+    class Disruptor~T~ {
+        -RingBuffer~T~ ringBuffer
+        -int bufferSize
+        -WaitStrategy waitStrategy
+        -EventHandler handler
+        +publish(event) void
+        +getRingBuffer() RingBuffer
+    }
+
+    class SegmentList~T~ {
+        -Segment~T~[] segments
+        -int firstOffset
+        -int size
+        -long estimatedBytes
+        +add(element) void
+        +get(index) T
+        +removeFromFirstWhen(predicate) void
+        +removeFromLastWhen(predicate) void
+    }
+
+    class RepeatedTimer {
+        -HashedWheelTimer timer
+        -int timeoutMs
+        -volatile int state
+        -String name
+        +start() void
+        +stop() void
+        +reset() void
+        #onTrigger() void
+        #adjustTimeout(newTimeout) int
+    }
+
+    class NonReentrantLock {
+        -Sync sync
+        +lock() void
+        +unlock() void
+        +tryLock() boolean
+        +newCondition() Condition
+    }
+
+    class ThreadId {
+        -Object data
+        -ReentrantLock lock
+        -OnError onError
+        +lock() Object
+        +unlock() void
+        +setError(errorCode) void
+    }
+
+    class LongHeldDetectingReadWriteLock {
+        -long maxBlockingTimeMs
+        -ReentrantReadWriteLock impl
+        +readLock() Lock
+        +writeLock() Lock
+    }
+
+    class Recyclers {
+        -ThreadLocal~Stack~ threadLocal
+        +get() T
+        #newObject(Handle) T
+    }
+
+    Disruptor --> SegmentList : LogManager 用两者配合
+    RepeatedTimer --> HashedWheelTimer : 底层实现
+    NodeImpl ..> Disruptor : 使用(4处)
+    NodeImpl ..> RepeatedTimer : 使用(5个定时器)
+    LogManager ..> SegmentList : logsInMemory
+    Replicator ..> ThreadId : 唯一标识
+    NodeImpl ..> LongHeldDetectingReadWriteLock : 读写锁
+```

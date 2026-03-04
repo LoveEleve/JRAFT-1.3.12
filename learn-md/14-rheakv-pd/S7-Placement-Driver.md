@@ -1,5 +1,25 @@
 # S7：RheaKV Placement Driver — 调度中心源码分析
 
+## ☕ 想先用人话了解 Placement Driver？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊 Placement Driver（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用"图书馆馆长"的比喻，带你理解 PD 的三大职责（拓扑维护、自动分裂、负载均衡）、PD 自身的 Raft 高可用、Fake PD 与独立部署的区别。**建议先读通俗解读版。**
+2. **决策下发**：教务处看了汇报后做判断——"C 班人太多了，拆成两个班！" "Leader 全在 1 号教室，把几个 Leader 挪到 2 号教室去！"。这些决策通过心跳响应返回给 Store，Store 照办
+3. **元数据管理**：教务处自己也要记"哪个班在哪个教室、班长是谁"——这些元数据用一个独立的 Raft Group 存储（PD 自己也是高可用的！教务处也得有备份，不能教务主任请假了学校就瘫痪了）
+
+最有趣的是 PD 的**决策引擎**——它用了一个 **Pipeline 处理器链**（就像工厂流水线）。心跳数据进来后，依次经过多个"处理站"：
+
+- 第一站：检查要不要做 Leader 负载均衡
+- 第二站：检查要不要做 Region 自动分裂
+- 第三站：……
+
+每个处理站独立判断，互不干扰。这种设计特别好扩展——以后要加新的调度策略？再加一个处理站就行了。
+
+好，记住：**PD = 教务处（信息收集 + 调度决策 + 元数据管理），PD 自己也用 Raft 保证高可用**。下面来看代码 👇
+
+---
+
 > **核心问题**：分布式 KV 存储的多个 Region 由谁来管理？Region 负载不均怎么调度？Region 数据量过大怎么自动分裂？PD 自身如何保证高可用？
 >
 > **涉及源码文件**：`PlacementDriverServer.java`（272 行）、`DefaultPlacementDriverService.java`（360 行）、`DefaultMetadataStore.java`（303 行）、`ClusterStatsManager.java`（169 行）、`PlacementDriverProcessor.java`（108 行）、`MetadataKeyHelper.java`（95 行）+ 8 个 Pipeline Handler（~500 行）

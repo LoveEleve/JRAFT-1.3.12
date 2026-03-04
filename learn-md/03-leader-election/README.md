@@ -1,5 +1,13 @@
 # 03 - Leader 选举：深度精读
 
+## ☕ 想先用人话了解选举？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊 Leader 选举（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用"班级选班长"的故事，从 PreVote 为什么存在开始，一步步带你理解整个选举流程——预投票、正式拉票、计票、上任，以及优先级选举和 Leader Transfer。**如果你觉得直接看源码逐行分析太硬核，建议先读通俗解读版。**
+
+---
+
 ## 学习目标
 
 深入理解 JRaft 的选举机制，包括 PreVote（预投票）、RequestVote（正式投票）、选举优先级、以及 Leader Transfer（主动转让）。
@@ -847,3 +855,73 @@ this.stepDownTimer = new RepeatedTimer(name, this.options.getElectionTimeoutMs()
 4. **优先级选举在网络不稳定时可能导致频繁重选**
    - `targetPriority` 衰减后，低优先级节点参与选举，可能当选
    - 高优先级节点恢复后，`targetPriority` 重置为最高值，但不会主动触发重选
+
+---
+
+## 十、选举模块数据结构关系图
+
+```mermaid
+classDiagram
+    class NodeImpl {
+        -State state
+        -PeerId leaderId
+        -PeerId votedId
+        -long currTerm
+        -int targetPriority
+        -RepeatedTimer electionTimer
+        -RepeatedTimer voteTimer
+        -RepeatedTimer stepDownTimer
+        -Ballot voteCtx
+        -Ballot prevVoteCtx
+        +preVote() void
+        +electSelf() void
+        +becomeLeader() void
+        +stepDown(term) void
+    }
+
+    class Ballot {
+        -UnfoundPeerId[] peers
+        -int quorum
+        -UnfoundPeerId[] oldPeers
+        -int oldQuorum
+        +init(peers, oldPeers) boolean
+        +grant(peer) void
+        +isGranted() boolean
+    }
+
+    class RepeatedTimer {
+        -HashedWheelTimer timer
+        -int timeoutMs
+        -volatile boolean stopped
+        +start() void
+        +stop() void
+        +reset() void
+        +adjustTimeout(newTimeout) void
+    }
+
+    class State {
+        <<enumeration>>
+        LEADER
+        TRANSFERRING
+        CANDIDATE
+        FOLLOWER
+        ERROR
+        UNINITIALIZED
+        SHUTTING_DOWN
+        SHUTDOWN
+    }
+
+    class PeerId {
+        -Endpoint endpoint
+        -int idx
+        -int priority
+        -String checksum
+        +isEmpty() boolean
+    }
+
+    NodeImpl --> Ballot : voteCtx / prevVoteCtx
+    NodeImpl --> RepeatedTimer : electionTimer / voteTimer
+    NodeImpl --> State : state
+    NodeImpl --> PeerId : leaderId / votedId / serverId
+    Ballot --> PeerId : peers 列表
+```

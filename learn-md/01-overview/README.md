@@ -5,6 +5,14 @@
 
 ---
 
+## ☕ 想先用人话了解 JRaft？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊 JRaft 全局架构（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用讲故事的方式，从"为什么需要 JRaft"开始，一步步带你认识所有核心组件、理解它们之间的关系，以及一个写请求的完整旅程。**如果你是第一次接触 Raft 或 JRaft，强烈建议先读通俗解读，再回来看下面的精炼总结。**
+
+---
+
 ## 一、为什么要先看全局？
 
 很多人学框架源码，上来就找 `NodeImpl`，翻到第 200 行，看到一个 `fsmCaller`，不知道是什么；
@@ -299,7 +307,103 @@ flowchart LR
 
 ---
 
-## 十二、本篇小结 & 下一篇预告
+## 十二、核心组件关系图（数据结构全景）
+
+```mermaid
+classDiagram
+    class NodeImpl {
+        -State state
+        -ReadWriteLock readWriteLock
+        -LogManager logManager
+        -FSMCaller fsmCaller
+        -BallotBox ballotBox
+        -ReplicatorGroup replicatorGroup
+        -SnapshotExecutor snapshotExecutor
+        -ReadOnlyServiceImpl readOnlyService
+        -RaftMetaStorage metaStorage
+        -RaftClientService rpcService
+        -ConfigurationCtx confCtx
+        +init(opts) boolean
+        +apply(task) void
+        +readIndex(closure) void
+        +shutdown() void
+    }
+
+    class LogManager {
+        -LogStorage logStorage
+        -ConfigurationManager confManager
+        -Disruptor disruptor
+        -SegmentList~LogEntry~ logsInMemory
+        +appendEntries(entries, done) void
+        +getEntry(index) LogEntry
+        +getLastLogIndex() long
+    }
+
+    class FSMCaller {
+        -Disruptor disruptor
+        -StateMachine fsm
+        -LogManager logManager
+        -AtomicLong lastAppliedIndex
+        +onCommitted(committedIndex) boolean
+        +onSnapshotSave(done) boolean
+        +onSnapshotLoad(done) boolean
+    }
+
+    class BallotBox {
+        -StampedLock stampedLock
+        -FSMCaller waiter
+        -long lastCommittedIndex
+        -SegmentList~Ballot~ pendingMetaQueue
+        +appendPendingTask(peers, oldPeers) boolean
+        +commitAt(firstIndex, lastIndex, peer) boolean
+    }
+
+    class ReplicatorGroup {
+        -Map~PeerId, ThreadId~ replicatorMap
+        +addReplicator(peer) boolean
+        +sendHeartbeat(closure) void
+    }
+
+    class Replicator {
+        -ThreadId id
+        -RaftClientService rpcService
+        -long nextIndex
+        -Inflight[] inflights
+        +sendEntries() void
+        +installSnapshot() void
+    }
+
+    class SnapshotExecutor {
+        -FSMCaller fsmCaller
+        -LogManager logManager
+        -SnapshotStorage snapshotStorage
+        +doSnapshot(done) void
+        +installSnapshot(request) void
+    }
+
+    class ReadOnlyService {
+        -Disruptor disruptor
+        -RaftClientService rpcService
+        -NodeImpl node
+        +addRequest(closure) void
+    }
+
+    NodeImpl --> LogManager : 管理日志
+    NodeImpl --> FSMCaller : 驱动状态机
+    NodeImpl --> BallotBox : 统计多数派
+    NodeImpl --> ReplicatorGroup : 管理复制器
+    NodeImpl --> SnapshotExecutor : 管理快照
+    NodeImpl --> ReadOnlyService : 线性一致读
+    ReplicatorGroup --> Replicator : 1:N
+    BallotBox --> FSMCaller : onCommitted
+    FSMCaller --> LogManager : 读取日志
+    SnapshotExecutor --> FSMCaller : save/load
+    SnapshotExecutor --> LogManager : truncatePrefix
+```
+
+---
+
+## 十三、本篇小结 & 下一篇预告
 
 **本篇建立了整个系列的"地图"**：
 - ✅ 知道了 JRaft 解决什么问题

@@ -1,5 +1,13 @@
 # 04 - 日志复制
 
+## ☕ 想先用人话了解日志复制？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊日志复制（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用讲故事的方式，帮你理解 Pipeline 为什么存在、BallotBox 怎么计票、FSMCaller 的 Disruptor 批量合并有多精妙、以及 LogManager 的内存与磁盘如何协作。**如果你觉得 88KB 的源码分析太硬核，建议先读通俗解读版建立全局认知。**
+
+---
+
 ## 学习目标
 
 深入理解 JRaft 的日志复制机制，包括 `Replicator`（复制器）的工作原理、Pipeline 复制、批量发送、以及 `BallotBox` 的提交流程。
@@ -2040,3 +2048,84 @@ sequenceDiagram
 - 前 4 次 `endOfBatch=false`，只更新 `maxCommittedIndex`，**不触发 `doCommitted`**
 - 第 5 次 `endOfBatch=true`，触发 `doCommitted(15)`，**一次性 apply index 11~15 的所有日志**
 - ✅ 验证了"5 次 `onCommitted` 只触发 1 次 `doCommitted(15)`"的批量合并效果，与文档描述完全一致
+
+---
+
+## ⑦ 日志复制模块数据结构关系图
+
+```mermaid
+classDiagram
+    class Replicator {
+        -ThreadId id
+        -PeerId peerId
+        -RaftClientService rpcService
+        -long nextIndex
+        -int reqSeq
+        -int requiredNextSeq
+        -State state
+        -Inflight[] inflights
+        -RaftOptions raftOptions
+        +sendEntries() void
+        +installSnapshot() void
+        +sendHeartbeat(closure) void
+    }
+
+    class ReplicatorGroupImpl {
+        -Map~PeerId,ThreadId~ replicatorMap
+        -Map~PeerId,ReplicatorType~ failureReplicators
+        +addReplicator(peer, type) boolean
+        +stopReplicator(peer) boolean
+        +sendHeartbeat(closure) void
+        +getReplicator(peer) ThreadId
+    }
+
+    class BallotBox {
+        -StampedLock stampedLock
+        -FSMCaller waiter
+        -long lastCommittedIndex
+        -long pendingIndex
+        -SegmentList~Ballot~ pendingMetaQueue
+        +appendPendingTask(conf, oldConf) boolean
+        +commitAt(first, last, peer) boolean
+        +clearPendingTasks() long
+    }
+
+    class Ballot {
+        -UnfoundPeerId[] peers
+        -int quorum
+        -UnfoundPeerId[] oldPeers
+        -int oldQuorum
+        +init(peers, oldPeers) boolean
+        +grant(peerId) void
+        +isGranted() boolean
+    }
+
+    class LogManagerImpl {
+        -LogStorage logStorage
+        -SegmentList~LogEntry~ logsInMemory
+        -Disruptor disruptor
+        -ReadWriteLock lock
+        -LogId diskId
+        -LogId appliedId
+        +appendEntries(entries, done) void
+        +getEntry(index) LogEntry
+        +setSnapshot(meta) void
+    }
+
+    class Inflight {
+        -int startIndex
+        -int count
+        -int seq
+        -boolean isSendingLogEntries
+    }
+
+    ReplicatorGroupImpl --> Replicator : 1:N 管理
+    Replicator --> LogManagerImpl : 读取日志
+    Replicator --> Inflight : Pipeline 窗口
+    BallotBox --> Ballot : pendingMetaQueue
+    BallotBox --> FSMCaller : onCommitted
+    Replicator ..> BallotBox : commitAt
+    NodeImpl --> ReplicatorGroupImpl : replicatorGroup
+    NodeImpl --> BallotBox : ballotBox
+    NodeImpl --> LogManagerImpl : logManager
+```

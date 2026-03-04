@@ -1,6 +1,14 @@
 
 # 12 - Metrics 与可观测性（Metrics & Observability）
 
+## ☕ 想先用人话了解监控？请看通俗解读
+
+> **👉 [点击阅读：用人话聊聊监控（通俗解读完整版）](./通俗解读.md)**
+>
+> 通俗解读版用"体检报告"的比喻，带你理解 Timer/Counter/Histogram 三种测量工具、Unix Signal 紧急诊断、Disruptor 队列监控和 Prometheus 集成。**建议先读通俗解读版。**
+
+---
+
 > 本章分析 JRaft 的 Metrics 采集、信号处理（Signal）、可观测性基础设施的完整设计，从"如何知道系统运行状态"这个核心问题出发，推导出整个监控体系架构。
 
 ---
