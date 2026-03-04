@@ -901,22 +901,32 @@ Client → Node.apply(Task)
 - [x] **S10**：远程快照拷贝 RemoteFileCopier + CopySession（~21KB，✅ 已完成 → `06-snapshot/S10-Remote-File-Copier.md`）
 
 ### 第三批（P2 — 扩展模块与基础设施）
-- [ ] **S6**：gRPC 实现对比 Bolt（~43KB，预计 3 小时）
-- [ ] **S7**：RheaKV Placement Driver（~80KB，预计 4-6 小时）
+- [x] **S6**：gRPC 实现对比 Bolt（~43KB，✅ 已完成 → `10-rpc-layer/S6-gRPC-vs-Bolt.md`）
+- [x] **S7**：RheaKV Placement Driver（~80KB，✅ 已完成 → `14-rheakv-pd/S7-Placement-Driver.md`）
 - [x] **S11**：SPI 扩展机制 + JRaftServiceFactory（~35KB，✅ 已完成 → `02-node-lifecycle/S11-SPI.md`）
 - [x] **S12**：HashedWheelTimer 时间轮实现（~48KB，✅ 已完成 → `11-concurrency-infra/S12-HashedWheelTimer.md`）
-- [ ] **S13**：Protobuf 协议定义与消息结构（~7 个 proto 文件，预计 2 小时）
-- [ ] **S16**：NodeOptions/RaftOptions 配置项全解（~30KB，预计 2 小时）
+- [x] **S13**：Protobuf 协议定义与消息结构（~7 个 proto 文件，✅ 已完成 → `10-rpc-layer/S13-Protobuf-Protocol.md`）
+- [x] **S16**：NodeOptions/RaftOptions 配置项全解（~30KB，✅ 已完成 → `01-overview/S16-Configuration-Guide.md`）
 
 ### 第四批（P3 — 补充完善）
-- [ ] **S8**：Bootstrap 集群引导流程（~100 行，预计 0.5 小时）
-- [ ] **S15**：BDB 日志存储扩展实现（~19KB，预计 1.5 小时）
+- [x] **S8**：Bootstrap 集群引导流程（~100 行，✅ 已完成 → `02-node-lifecycle/S8-Bootstrap.md`）
+- [x] **S15**：BDB 日志存储扩展实现（~19KB，✅ 已完成 → `05-log-storage/S15-BDB-LogStorage.md`）
+
+### 第五批（深度学习 — 覆盖盲区）
+- [x] **S17**：Follower 端 RPC 处理全景分析（handleAppendEntriesRequest / handleRequestVoteRequest / handlePreVoteRequest，✅ 已完成 → `04-log-replication/S17-Follower-RPC-Handling.md`）
+- [x] **S18**：Replicator Pipeline 深度分析（Inflight 队列 / 序号系统 / 乱序响应处理 / 三层流控 / 状态机，✅ 已完成 → `04-log-replication/S18-Replicator-Pipeline.md`）
+- [x] **S19**：Multi-Raft Group 架构深度分析（NodeManager / RaftGroupService / 资源共享 / RPC 路由 / RouteTable，✅ 已完成 → `09-membership-change/S19-Multi-Raft-Group.md`）
+- [x] **S20**：NodeImpl 状态机与核心锁机制深度分析（9 种状态 / 23 处状态转换 / stepDown 枢纽方法 / LongHeldDetectingReadWriteLock / 定时器联动，✅ 已完成 → `02-node-lifecycle/S20-NodeImpl-StateMachine.md`）
+
+### 第六批（补充优化）
+- [x] **S21**：端到端读取链路 Node.readIndex() → ReadIndexClosure 回调（与 S14 写路径对称，串联 ReadIndex 从客户端到状态机读取的完整路径，✅ 已完成 → `00-e2e-read-path/S21-E2E-Read-Path.md`）
 
 ---
 
 ## 完成后的章节结构
 
 ```
+00-e2e-read-path/           ← 新增 S21(端到端读取链路)
 00-e2e-write-path/          ← 新增 S14(端到端写入链路)
 01-overview/                ← 补入 S16(NodeOptions/RaftOptions 配置项全解) [或新增附录]
 02-node-lifecycle/          ← 补入 S2(LocalRaftMetaStorage) + S8(Bootstrap) + S9(优雅停机) + S11(SPI 体系)
@@ -934,4 +944,12 @@ Client → Node.apply(Task)
 13-rheakv-core/
 14-rheakv-pd/               ← 新增 S7(Placement Driver)
 appendix-protobuf-protocol/ ← 新增 S13(Protobuf 协议定义)
+FINAL-Architecture-Panorama.md  ← 新增（架构全景图，11 张 Mermaid 图串联所有组件）
+FINAL-Interview-20.md           ← 新增（20 道高频面试题，源码级答案）
 ```
+
+---
+
+### 第七批（终极总结 — 架构全景图 + 面试专题）
+- [x] **架构全景图（方向 C）**：11 张 Mermaid 图串联 37 篇文档所有组件（✅ 已完成 → `FINAL-Architecture-Panorama.md`）
+- [x] **面试 20 题（方向 D）**：20 道高频题 × 源码定位 × 完整答案（✅ 已完成 → `FINAL-Interview-20.md`）

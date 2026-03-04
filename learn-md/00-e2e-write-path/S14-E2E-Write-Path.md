@@ -2,7 +2,7 @@
 
 > 本文档串联一次写入请求的**完整生命周期**，横跨 6 个核心组件（NodeImpl → LogManager → Replicator → BallotBox → FSMCaller → StateMachine），是理解 JRaft 最重要的一根"脊柱"。
 >
-> 涉及源码文件：`NodeImpl.java`（3624 行）、`LogManagerImpl.java`（1255 行）、`Replicator.java`（1910 行）、`BallotBox.java`（295 行）、`FSMCallerImpl.java`（790 行）、`IteratorImpl.java`（195 行）、`ClosureQueueImpl.java`（151 行）
+> 涉及源码文件：`NodeImpl.java`（3623 行）、`LogManagerImpl.java`（1254 行）、`Replicator.java`（1909 行）、`BallotBox.java`（294 行）、`FSMCallerImpl.java`（789 行）、`IteratorImpl.java`（195 行）、`ClosureQueueImpl.java`（151 行）
 
 ---
 

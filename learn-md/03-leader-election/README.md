@@ -248,7 +248,7 @@ private boolean isCurrentLeaderValid() {
 ### 4.2 allowLaunchElection()（选举优先级过滤）
 
 ```java
-// NodeImpl.java 第 660-695 行
+// NodeImpl.java 第 662-697 行
 private boolean allowLaunchElection() {
     // priority=0：永不参与选举
     if (this.serverId.isPriorityNotElected()) {
@@ -374,7 +374,7 @@ public Message handlePreVoteRequest(final RequestVoteRequest request) {
         // term >= currTerm：无论是否最终授权，都检查 replicator（防止 replicator 未启动）
         checkReplicator(candidateId);
 
-        // ④ 在锁外获取 lastLogId（ABA 防御同 preVote）
+        // ④ 在锁外获取 lastLogId（unlock→IO→relock 模式，注意此处没有像 preVote/electSelf 那样做 oldTerm!=currTerm 的 ABA 检查）
         doUnlock = false;
         this.writeLock.unlock();
         final LogId lastLogId = this.logManager.getLastLogId(true);
@@ -675,8 +675,8 @@ private void stepDown(final long term, final boolean wakeupCandidate, final Stat
 ### 5.1 electionTimer 和 voteTimer（选举/投票超时定时器）
 
 ```java
-// NodeImpl.java 第 930-954 行
-// voteTimer（第 930 行）：投票超时，触发 handleVoteTimeout()
+// NodeImpl.java 第 929-954 行
+// voteTimer（第 929 行）：投票超时，触发 handleVoteTimeout()
 this.voteTimer = new RepeatedTimer(name, this.options.getElectionTimeoutMs(), ...) {
     @Override
     protected void onTrigger() { handleVoteTimeout(); }

@@ -1,8 +1,8 @@
 # S1：RocksDBSegmentLogStorage — 新一代日志存储引擎
 
 > **归属**：新增 `05b-segment-log-storage/` 章节
-> **核心源码**：`RocksDBSegmentLogStorage.java`（1214 行）+ `SegmentFile.java`（903 行）+ `CheckpointFile.java`（119 行）+ `AbortFile.java`（75 行）+ `LibC.java`（60 行）
-> **总代码量**：~84KB（2370 行），JRaft 中最复杂的存储模块
+> **核心源码**：`RocksDBSegmentLogStorage.java`（1214 行）+ `SegmentFile.java`（903 行）+ `CheckpointFile.java`（119 行）+ `AbortFile.java`（74 行）+ `LibC.java`（59 行）
+> **总代码量**：~78KB（2369 行），JRaft 中最复杂的存储模块
 > **前置依赖**：需先阅读 05 章节（RocksDBLogStorage 旧版）
 
 ---
@@ -251,7 +251,7 @@ flowchart TD
 1. `write()` 只更新 `wrotePos`，实际数据写入由线程池异步执行
 2. `sync()` 将 `committedPos` 推进到 `wrotePos`，并调用 `buffer.force()` 做 fsync
 
-> ⚠️ **生产踩坑**：如果读取了 `committedPos` 到 `wrotePos` 之间的数据，可能读到**半写（partial write）**的脏数据。源码在 `read()` 方法中做了防护（`SegmentFile.java:806`）：
+> ⚠️ **生产踩坑**：如果读取了 `committedPos` 到 `wrotePos` 之间的数据，可能读到**半写（partial write）**的脏数据。源码在 `read()` 方法中做了防护（`SegmentFile.java:807`）：
 > ```java
 > if (pos >= this.committedPos) {
 >     LOG.warn("Try to read data from segment file {} out of comitted position...");

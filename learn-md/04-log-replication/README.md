@@ -919,9 +919,6 @@ public void clearPendingTasks() {
 1. **`commitAt()` 抛出 `ArrayIndexOutOfBoundsException`** → `lastLogIndex >= pendingIndex + pendingMetaQueue.size()`，说明 Replicator 的 `nextIndex` 超出了 BallotBox 的 `pendingMetaQueue` 范围，通常是 `appendPendingTask` 和 `commitAt` 的调用时序出现了问题
 2. **`resetPendingIndex()` 返回 false** → 说明 `pendingMetaQueue` 不为空（上一任 Leader 的残留），需要先调用 `clearPendingTasks()`
 3. **`setLastCommittedIndex()` 返回 false（Follower 场景）** → 有三种情况：①`pendingIndex != 0 || !pendingMetaQueue.isEmpty()`（节点已变为 Leader，有 pendingMetaQueue，不应走 Follower 路径）；②FSMCaller 的 Disruptor RingBuffer 满（`hasAvailableCapacity(1)` 返回 false），状态机处理速度跟不上日志提交速度；③`lastCommittedIndex < this.lastCommittedIndex`（收到了旧的 committedIndex，直接忽略）
-4. **`commitAt()` 抛出 `ArrayIndexOutOfBoundsException`** → `lastLogIndex >= pendingIndex + pendingMetaQueue.size()`，说明 Replicator 的 `nextIndex` 超出了 BallotBox 的 `pendingMetaQueue` 范围，通常是 `appendPendingTask` 和 `commitAt` 的调用时序出现了问题
-5. **`resetPendingIndex()` 返回 false** → 说明 `pendingMetaQueue` 不为空（上一任 Leader 的残留），需要先调用 `clearPendingTasks()`
-6. **`setLastCommittedIndex()` 返回 false（Follower 场景）** → 有三种情况：①`pendingIndex != 0 || !pendingMetaQueue.isEmpty()`（节点已变为 Leader，有 pendingMetaQueue，不应走 Follower 路径）；②FSMCaller 的 Disruptor RingBuffer 满（`hasAvailableCapacity(1)` 返回 false），状态机处理速度跟不上日志提交速度；③`lastCommittedIndex < this.lastCommittedIndex`（收到了旧的 committedIndex，直接忽略）
 
 ---
 
